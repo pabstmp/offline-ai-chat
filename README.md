@@ -7,9 +7,24 @@ Self-hosted web client for [LM Studio](https://lmstudio.ai/) with **offline RAG*
 [![Docker](https://img.shields.io/badge/Docker-compose-2496ED.svg?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![Vanilla JS](https://img.shields.io/badge/Stack-Vanilla%20JS-F7DF1E.svg?logo=javascript&logoColor=black)](#stack)
 
+![Offline AI Chat — RAG over local PDFs answering "Which documents are in the base and what's the total of each?"](./assets/screenshot-chat.png)
+
 > **Why?** Because you have an LLM running locally (gpt-oss, Qwen, DeepSeek, Gemma, Llama…) and the official LM Studio chat UI doesn't have RAG, OCR, custom profiles, multi-server switching, or the keyboard shortcuts you actually use. This is a tab in your browser that does.
 
 📖 **Full user guide (PT-BR):** [`GUIDE.md`](./GUIDE.md) · **Dev notes:** [`CLAUDE.md`](./CLAUDE.md)
+
+<details>
+<summary><strong>More screenshots →</strong></summary>
+
+**Workspace + RAG configuration** — connect a folder, pick an embedding model, toggle OCR, index. Auto-strategy figures out the rest.
+
+![Workspace tab showing RAG settings with Qwen3-Embedding-4B selected and OCR enabled](./assets/screenshot-workspace.png)
+
+**Hardware-aware model recommendations** — detects your VRAM/RAM and curates models from the catalog that actually fit.
+
+![Hardware tab showing detected machine specs and a list of recommended models](./assets/screenshot-hardware.png)
+
+</details>
 
 ---
 
