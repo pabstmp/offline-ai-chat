@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    name: JS syntax check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate CommonJS / Node files
+        run: |
+          for f in server.js; do
+            node --check "$f"
+          done
+      - name: Validate ES modules
+        run: |
+          for f in app.js modules/*.js modules/ui/*.js modules/ui/settings/*.js modules/workspace/*.js modules/rag/*.js; do
+            node --input-type=module --check < "$f" || { echo "FAIL: $f"; exit 1; }
+            echo "OK: $f"
+          done
+
+  docker-build:
+    name: Docker build smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build container image
+        run: docker build -t offline-ai-chat:ci .
+      - name: Boot container and verify HTTP 200
+        run: |
+          docker run -d --name oai -p 18080:8080 offline-ai-chat:ci
+          sleep 5
+          curl -fsS -o /dev/null -w "HTTP %{http_code}\n" http://localhost:18080/ | grep "200"
+          docker logs oai
+          docker stop oai

@@ -1,0 +1,43 @@
+{
+  "name": "offline-ai-chat",
+  "version": "2.0.0",
+  "description": "Self-hosted web client for LM Studio with offline RAG, OCR, multilingual embeddings, and zero client-side dependencies.",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "for f in app.js server.js modules/*.js modules/ui/*.js modules/ui/settings/*.js modules/workspace/*.js modules/rag/*.js; do node --check \"$f\" 2>/dev/null && echo \"$f OK\" || echo \"FAIL $f\"; done"
+  },
+  "keywords": [
+    "lm-studio",
+    "rag",
+    "ocr",
+    "tesseract",
+    "embeddings",
+    "offline-ai",
+    "self-hosted",
+    "vanilla-js",
+    "chat-ui",
+    "local-llm",
+    "openai-compatible",
+    "qwen3-embedding"
+  ],
+  "author": "pabstmp",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pabstmp/offline-ai-chat.git"
+  },
+  "homepage": "https://github.com/pabstmp/offline-ai-chat#readme",
+  "bugs": {
+    "url": "https://github.com/pabstmp/offline-ai-chat/issues"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.56",
+    "pdfjs-dist": "^4.10.38",
+    "tesseract.js": "^5.1.1"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

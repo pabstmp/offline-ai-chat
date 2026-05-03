@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+package-lock.json.bak
+
+# Local env / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Tesseract cache (downloaded traineddata)
+tesseract-cache/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Editor scratch
+/tmp/
+/scratch/
+
+# Build artifacts (none in this project, but defensive)
+dist/
+build/
+
+# Personal notes and study materials — not for the public repo
+docs/
+
+# Drafts and backups
+*.bak
+*.old

@@ -1,0 +1,33 @@
+services:
+  offline-ai-chat:
+    build:
+      context: .
+    container_name: offline-ai-chat
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      # WORKSPACE_ROOTS: optional whitelist (CSV). Empty = single-user mode (qualquer pasta).
+    ports:
+      - "8080:8080"
+    # Bind mount the host filesystem read-only so server.js can read files
+    # from the host. The server auto-translates Windows-style paths
+    # (C:\Users\foo) into /host/c/Users/foo when running in container.
+    #
+    # On Docker Desktop Windows (with WSL2 integration) the C:\ drive is
+    # available at /mnt/c — we bind it as /host/c so the server's
+    # translateWindowsPath finds it automatically.
+    #
+    # Note: read-only (:ro) means the server NEVER writes back to your disk.
+    volumes:
+      - /mnt/c:/host/c:ro
+      # Add more drives if you have them:
+      # - /mnt/d:/host/d:ro
+      # - /mnt/e:/host/e:ro
+      # Persist tesseract.js traineddata downloads between restarts —
+      # otherwise the first OCR run after a restart re-downloads the
+      # ~17MB language packs from the CDN.
+      - tesseract-cache:/app/.cache/tesseract
+    restart: unless-stopped
+
+volumes:
+  tesseract-cache:
