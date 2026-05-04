@@ -36,9 +36,30 @@ export function renderMarkdown(text) {
       copyBtn.className = "code-copy";
       copyBtn.textContent = "Copiar";
       copyBtn.addEventListener("click", () => {
-        navigator.clipboard?.writeText(code.textContent || "");
-        copyBtn.textContent = "Copiado";
-        setTimeout(() => { copyBtn.textContent = "Copiar"; }, 1200);
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(code.textContent || "").then(() => {
+            copyBtn.textContent = "Copiado ✓";
+            copyBtn.classList.add("code-copy--success");
+            copyBtn.dataset.copying = "true";
+            setTimeout(() => {
+              copyBtn.textContent = "Copiar";
+              copyBtn.classList.remove("code-copy--success");
+              delete copyBtn.dataset.copying;
+            }, 2000);
+          }).catch(() => {
+            // clipboard write failed silently
+          });
+        } else {
+          // fallback: no visual feedback when clipboard API unavailable
+          const ta = document.createElement("textarea");
+          ta.value = code.textContent || "";
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand("copy"); } catch {}
+          document.body.removeChild(ta);
+        }
       });
       pre.appendChild(copyBtn);
 

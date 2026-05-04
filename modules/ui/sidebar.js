@@ -10,6 +10,134 @@ let allConversations = [];
 let activeId = null;
 let searchTerm = "";
 
+/* ---------- semantic search state ---------- */
+let conversationVectors = new Map(); // id → Float32Array
+let semanticDebounceTimer = null;
+let semanticAbortController = null;
+let getEmbedConfig = null; // () => { baseUrl, apiKey, model } | null
+
+export function setEmbedConfig(cfg) {
+  getEmbedConfig = typeof cfg === "function" ? cfg : () => cfg;
+}
+
+/* Build the text to embed for a conversation */
+function textForConversation(conv) {
+  const title = conv.title || "";
+  const messages = (conv.messages || [])
+    .slice(0, 20)
+    .map((m) => m.content || "")
+    .join("\n");
+  return `${title}\n${messages}`.slice(0, 4000);
+}
+
+/* Cosine similarity between two Float32Arrays (assumed L2-normalised) */
+function dotProduct(a, b) {
+  let sum = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) sum += a[i] * b[i];
+  return sum;
+}
+
+/* Embed a single text via the RAG embedder endpoint */
+async function embedText(text, cfg, signal) {
+  const res = await fetch("/api/embeddings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      model: cfg.model,
+      input: text,
+    }),
+    signal,
+  });
+  if (!res.ok) throw new Error(`Embedding API error: ${res.status}`);
+  const data = await res.json();
+  const vec = data?.data?.[0]?.embedding;
+  if (!Array.isArray(vec)) throw new Error("Invalid embedding response");
+  // L2-normalise
+  const arr = new Float32Array(vec);
+  let norm = 0;
+  for (const v of arr) norm += v * v;
+  norm = Math.sqrt(norm);
+  if (norm > 0) for (let i = 0; i < arr.length; i++) arr[i] /= norm;
+  return arr;
+}
+
+async function runSemanticSearch(query) {
+  const cfg = getEmbedConfig?.();
+  if (!cfg?.model || !cfg?.baseUrl) {
+    // No embedding config — fall back to text search
+    elements.historySearch.removeAttribute("data-search-mode");
+    renderList();
+    return;
+  }
+
+  // Cancel any in-flight request
+  if (semanticAbortController) semanticAbortController.abort();
+  semanticAbortController = new AbortController();
+  const signal = semanticAbortController.signal;
+
+  elements.historySearch.dataset.searchMode = "semantic";
+
+  try {
+    // Index conversations not yet vectorised
+    const toIndex = allConversations.filter((c) => !conversationVectors.has(c.id));
+    for (const conv of toIndex) {
+      if (signal.aborted) return;
+      try {
+        const vec = await embedText(textForConversation(conv), cfg, signal);
+        conversationVectors.set(conv.id, vec);
+      } catch {
+        // Skip this conversation if embedding fails
+      }
+    }
+
+    if (signal.aborted) return;
+
+    // Embed the query
+    const queryVec = await embedText(query, cfg, signal);
+
+    if (signal.aborted) return;
+
+    // Score all conversations
+    const THRESHOLD = 0.35;
+    const scored = allConversations
+      .map((c) => {
+        const vec = conversationVectors.get(c.id);
+        const score = vec ? dotProduct(queryVec, vec) : -1;
+        return { conv: c, score };
+      })
+      .filter((r) => r.score >= THRESHOLD)
+      .sort((a, b) => b.score - a.score);
+
+    renderSemanticResults(scored.map((r) => r.conv));
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    // Any other error → silent fallback to text search
+    elements.historySearch.removeAttribute("data-search-mode");
+    renderList();
+  }
+}
+
+function renderSemanticResults(conversations) {
+  elements.historyList.replaceChildren();
+  if (!conversations.length) {
+    const empty = document.createElement("li");
+    empty.className = "history-group-label";
+    empty.textContent = "Sem resultados semânticos";
+    elements.historyList.appendChild(empty);
+    return;
+  }
+  const label = document.createElement("li");
+  label.className = "history-group-label";
+  label.textContent = "Resultados semânticos";
+  elements.historyList.appendChild(label);
+  for (const c of conversations) {
+    elements.historyList.appendChild(renderItem(c));
+  }
+}
+
 export function initSidebar(opts) {
   elements = opts.elements;
   store = opts.store;
@@ -17,17 +145,46 @@ export function initSidebar(opts) {
   onSelect = opts.onSelect || (() => {});
   onNew = opts.onNew || (() => {});
   onAction = opts.onAction || (() => {});
+  if (opts.getEmbedConfig) getEmbedConfig = opts.getEmbedConfig;
 
   elements.newChatButton.addEventListener("click", () => onNew());
   elements.historySearch.addEventListener("input", () => {
-    searchTerm = elements.historySearch.value.toLowerCase().trim();
-    renderList();
+    const raw = elements.historySearch.value;
+    searchTerm = raw.toLowerCase().trim();
+
+    // Clear any pending semantic search
+    if (semanticDebounceTimer) { clearTimeout(semanticDebounceTimer); semanticDebounceTimer = null; }
+    if (semanticAbortController) { semanticAbortController.abort(); semanticAbortController = null; }
+
+    if (!searchTerm) {
+      elements.historySearch.removeAttribute("data-search-mode");
+      renderList();
+      return;
+    }
+
+    const cfg = getEmbedConfig?.();
+    if (searchTerm.length >= 3 && cfg?.model && cfg?.baseUrl) {
+      // Semantic search with debounce
+      elements.historySearch.dataset.searchMode = "semantic";
+      semanticDebounceTimer = setTimeout(() => {
+        runSemanticSearch(searchTerm);
+      }, 400);
+    } else {
+      // Plain text search
+      elements.historySearch.removeAttribute("data-search-mode");
+      renderList();
+    }
   });
 }
 
 export async function refreshSidebar() {
   allConversations = await conversationStore.list();
   allConversations.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  // Invalidate vectors for conversations that no longer exist
+  const ids = new Set(allConversations.map((c) => c.id));
+  for (const id of conversationVectors.keys()) {
+    if (!ids.has(id)) conversationVectors.delete(id);
+  }
   renderList();
 }
 
@@ -95,7 +252,7 @@ function renderItem(conv) {
     if (e.target.closest(".history-item-menu")) {
       e.preventDefault();
       e.stopPropagation();
-      openMenu(conv, menu);
+      openMenu(conv, menu, title);
       return;
     }
     onSelect(conv.id);
@@ -105,7 +262,73 @@ function renderItem(conv) {
   return li;
 }
 
-function openMenu(conv, anchor) {
+function handleRenameAction(conv, titleEl) {
+  const originalTitle = conv.title || "";
+  let committed = false;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "history-item-rename";
+  input.value = originalTitle;
+
+  titleEl.replaceWith(input);
+
+  // Prevent key/click events from bubbling to the parent .history-item button
+  input.addEventListener("keyup", (e) => e.stopPropagation());
+  input.addEventListener("click", (e) => e.stopPropagation());
+
+  // Focus and select all text for easy replacement
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+
+  const commit = async () => {
+    if (committed) return;
+    const newTitle = input.value.trim();
+    if (newTitle && newTitle !== originalTitle) {
+      committed = true;
+      conv.title = newTitle;
+      conv.updatedAt = Date.now();
+      try {
+        await conversationStore.upsert(conv);
+        onAction({ action: "rename-done", conversation: conv });
+      } catch (err) {
+        // Revert on error
+        conv.title = originalTitle;
+        conv.updatedAt = conv.updatedAt;
+      }
+    } else {
+      committed = true;
+    }
+    refreshSidebar();
+  };
+
+  const cancel = () => {
+    committed = true;
+    refreshSidebar();
+  };
+
+  input.addEventListener("keydown", (e) => {
+    // Stop ALL key events from bubbling to the parent button
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+
+  input.addEventListener("blur", () => {
+    if (!committed) {
+      const newTitle = input.value.trim();
+      if (newTitle && newTitle !== originalTitle) {
+        commit();
+      } else {
+        cancel();
+      }
+    }
+  });
+}
+
+function openMenu(conv, anchor, titleEl) {
   const existing = document.getElementById("conv-menu");
   if (existing) existing.remove();
   const menu = document.createElement("div");
@@ -135,7 +358,18 @@ function openMenu(conv, anchor) {
     if (act === "delete") b.style.color = "var(--danger)";
     b.addEventListener("click", () => {
       menu.remove();
-      onAction({ action: act, conversation: conv });
+      if (act === "rename") {
+        // Use the titleEl passed directly from renderItem — no DOM search needed
+        const currentTitleEl = titleEl?.isConnected ? titleEl : null;
+        if (currentTitleEl) {
+          handleRenameAction(conv, currentTitleEl);
+        } else {
+          // Fallback: trigger via onAction if element was removed from DOM
+          onAction({ action: act, conversation: conv });
+        }
+      } else {
+        onAction({ action: act, conversation: conv });
+      }
     });
     menu.appendChild(b);
   }

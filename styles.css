@@ -468,6 +468,29 @@ kbd {
 .history-item:hover .history-item-menu,
 .history-item:focus-within .history-item-menu { opacity: 1; }
 
+/* Semantic search mode indicator */
+.sidebar-search[data-search-mode="semantic"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%237c5cff' stroke-width='2'%3E%3Cpath d='M12 2l2.4 7.4H22l-6.2 4.5 2.4 7.4L12 17l-6.2 4.3 2.4-7.4L2 9.4h7.6z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 32px;
+}
+
+/* Inline rename input */
+.history-item-rename {  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  color: var(--fg-0);
+  font-size: var(--fs-sm);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
 /* =========================================================================
    Chat
    ========================================================================= */
@@ -746,6 +769,17 @@ kbd {
 .msg-body pre:hover .code-copy { opacity: 1; }
 .code-copy:hover { color: var(--fg-0); border-color: var(--line-strong); }
 
+/* Copy feedback state */
+.code-copy--success {
+  color: var(--success) !important;
+  border-color: var(--success) !important;
+  opacity: 1 !important;
+}
+
+.msg-body pre:has(.code-copy[data-copying]) .code-copy {
+  opacity: 1;
+}
+
 .msg-actions {
   display: flex;
   gap: var(--s-1);
@@ -769,6 +803,53 @@ kbd {
 
 .msg-action:hover { background: var(--bg-2); color: var(--fg-0); }
 
+/* Inline message editor */
+.msg-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  width: 100%;
+}
+
+.msg-editor-textarea {
+  width: 100%;
+  min-height: 80px;
+  max-height: 40vh;
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-0);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-md);
+  color: var(--fg-0);
+  font-family: inherit;
+  font-size: inherit;
+  line-height: var(--lh-normal);
+  resize: vertical;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.msg-editor-preview {
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  min-height: 40px;
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+}
+
+.msg-editor-preview:empty::before {
+  content: "Preview do markdown...";
+  color: var(--fg-2);
+  font-style: italic;
+}
+
+.msg-editor-actions {
+  display: flex;
+  gap: var(--s-2);
+  justify-content: flex-end;
+}
+
 .msg-error {
   color: var(--danger);
   background: var(--danger-soft);
@@ -779,6 +860,28 @@ kbd {
 .msg-stats {
   margin-top: var(--s-2);
   padding-top: var(--s-2);
+  border-top: 1px dashed var(--line);
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Generation progress indicator (shown during streaming) */
+.msg-progress {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--fg-2);
+  margin-bottom: var(--s-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-progress-tps {
+  color: var(--fg-2);
+}
   border-top: 1px dashed var(--line);
   font-size: var(--fs-xs);
   font-family: var(--font-mono);

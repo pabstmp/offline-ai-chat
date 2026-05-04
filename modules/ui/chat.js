@@ -10,6 +10,9 @@ let onAction = null; // ({ action, messageId, content }) => void
 let scrollLocked = false;
 let scrollPending = false;
 
+/* ---------- inline editor state ---------- */
+let activeEditor = null; // { node, body, originalContent, originalReasoning, textarea, messageId }
+
 export function initChat(opts) {
   elements = opts.elements;
   state = opts.state;
@@ -98,9 +101,13 @@ export function renderMessage(message, options = {}) {
     btn.className = "msg-action";
     btn.dataset.act = act;
     btn.textContent = label;
-    btn.addEventListener("click", () =>
-      onAction({ action: act, messageId: message.id, node, body, message })
-    );
+    if (act === "edit") {
+      btn.addEventListener("click", () => openInlineEditor(node, body, message));
+    } else {
+      btn.addEventListener("click", () =>
+        onAction({ action: act, messageId: message.id, node, body, message })
+      );
+    }
     actions.appendChild(btn);
   }
 
@@ -114,6 +121,89 @@ export function renderMessage(message, options = {}) {
   scrollToBottom();
 
   return { node, body };
+}
+
+/* ---------- inline editor ---------- */
+
+function openInlineEditor(node, body, message) {
+  // Close any existing editor first
+  if (activeEditor) closeInlineEditor(false);
+
+  const originalContent = message.content || "";
+  const originalReasoning = message.reasoning || "";
+
+  // Build editor DOM
+  const editorWrap = document.createElement("div");
+  editorWrap.className = "msg-editor";
+
+  const textarea = document.createElement("textarea");
+  textarea.className = "msg-editor-textarea";
+  textarea.value = originalContent;
+  textarea.setAttribute("aria-label", "Editar mensagem");
+
+  const preview = document.createElement("div");
+  preview.className = "msg-editor-preview";
+  if (originalContent) preview.appendChild(renderMarkdown(originalContent));
+
+  const actionsRow = document.createElement("div");
+  actionsRow.className = "msg-editor-actions";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.className = "btn btn-sm btn-secondary";
+  cancelBtn.textContent = "Cancelar";
+  cancelBtn.addEventListener("click", () => closeInlineEditor(false));
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "btn btn-sm btn-primary";
+  saveBtn.textContent = "Salvar";
+  saveBtn.addEventListener("click", () => closeInlineEditor(true));
+
+  actionsRow.appendChild(cancelBtn);
+  actionsRow.appendChild(saveBtn);
+
+  editorWrap.appendChild(textarea);
+  editorWrap.appendChild(preview);
+  editorWrap.appendChild(actionsRow);
+
+  // Keyboard shortcuts
+  textarea.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); closeInlineEditor(false); }
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); closeInlineEditor(true); }
+  });
+
+  // Live markdown preview
+  textarea.addEventListener("input", () => {
+    preview.replaceChildren(renderMarkdown(textarea.value));
+  });
+
+  // Replace body content with editor
+  body.replaceChildren(editorWrap);
+
+  activeEditor = { node, body, originalContent, originalReasoning, textarea, messageId: message.id, message };
+
+  // Focus after DOM insertion
+  requestAnimationFrame(() => textarea.focus());
+}
+
+function closeInlineEditor(save) {
+  if (!activeEditor) return;
+  const { body, originalContent, originalReasoning, textarea, messageId, message } = activeEditor;
+  activeEditor = null;
+
+  if (save) {
+    const newContent = textarea.value;
+    // Update the message object in place so re-renders are consistent
+    message.content = newContent;
+    // Notify app.js to persist
+    onAction({ action: "edit-save", messageId, content: newContent });
+    // Re-render body with new content
+    setBodyContent(body, newContent, false, originalReasoning);
+  } else {
+    // Restore original content
+    setBodyContent(body, originalContent, false, originalReasoning);
+  }
 }
 
 /* Set body content: streaming uses raw <pre>, finalized uses markdown render.
@@ -204,7 +294,7 @@ export function finalizeAssistant(body, content, isError = false, reasoning = ""
       body.appendChild(block);
     }
     if (content) body.appendChild(renderMarkdown(content));
-    if (meta?.usage || meta?.finishReason) {
+    if (meta?.usage || meta?.finishReason || meta?.elapsed) {
       body.appendChild(buildStatsLine(meta));
     }
   }
@@ -222,6 +312,16 @@ function buildStatsLine(meta) {
     parts.push(`${contentT.toLocaleString()} content`);
   }
   if (meta.finishReason) parts.push(`stop: ${meta.finishReason}`);
+  // elapsed time and tok/s from generation timer
+  if (meta.elapsed != null && meta.elapsed > 0) {
+    const secs = (meta.elapsed / 1000).toFixed(1);
+    parts.push(`${secs}s`);
+    const completionTokens = u.completion_tokens || 0;
+    if (completionTokens > 0) {
+      const tps = (completionTokens / (meta.elapsed / 1000)).toFixed(1);
+      parts.push(`${tps} tok/s`);
+    }
+  }
   if (!parts.length) return document.createDocumentFragment();
   const div = document.createElement("div");
   div.className = "msg-stats";
@@ -232,7 +332,6 @@ function buildStatsLine(meta) {
 export function clearMessages() {
   elements.messagesInner.replaceChildren();
 }
-
 export function renderAllMessages(messages) {
   clearMessages();
   for (const m of messages) renderMessage(m, { noAnim: true });
@@ -245,4 +344,56 @@ export function removeMessageNode(node) {
 export function setLoadingTyping(body) {
   body.innerHTML =
     '<span class="typing"><span></span><span></span><span></span></span>';
+}
+
+/* ---------- generation timer ---------- */
+
+export function startGenerationTimer(body) {
+  const startTime = Date.now();
+  let tokenCount = 0;
+  let intervalId = null;
+
+  const progressEl = document.createElement("div");
+  progressEl.className = "msg-progress";
+  progressEl.setAttribute("aria-live", "polite");
+
+  const timeEl = document.createElement("span");
+  timeEl.className = "msg-progress-time";
+  timeEl.textContent = "0s";
+
+  const tpsEl = document.createElement("span");
+  tpsEl.className = "msg-progress-tps";
+
+  progressEl.appendChild(timeEl);
+  progressEl.appendChild(tpsEl);
+
+  // Insert at the start of body (before streaming content)
+  body.insertBefore(progressEl, body.firstChild);
+
+  const update = () => {
+    const elapsed = Date.now() - startTime;
+    const secs = Math.floor(elapsed / 1000);
+    timeEl.textContent = `${secs}s`;
+    if (tokenCount > 0 && elapsed > 0) {
+      const tps = (tokenCount / (elapsed / 1000)).toFixed(1);
+      tpsEl.textContent = `· ${tps} tok/s`;
+    }
+  };
+
+  intervalId = setInterval(update, 1000);
+
+  return {
+    stop: () => {
+      if (intervalId) { clearInterval(intervalId); intervalId = null; }
+      progressEl.remove();
+    },
+    getElapsed: () => Date.now() - startTime,
+    getTokenCount: () => tokenCount,
+    setTokenCount: (n) => { tokenCount = n; },
+  };
+}
+
+export function stopGenerationTimer(handle) {
+  if (!handle) return;
+  handle.stop();
 }

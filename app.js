@@ -18,7 +18,7 @@ import { initToasts, toast } from "./modules/ui/toasts.js";
 import {
   initChat, renderMessage, renderAllMessages,
   setBodyContent, appendStreamingDelta, finalizeAssistant,
-  scrollToBottom,
+  scrollToBottom, startGenerationTimer, stopGenerationTimer,
 } from "./modules/ui/chat.js";
 import {
   initComposer, clearComposer, focusComposer, setBusy as setComposerBusy,
@@ -103,6 +103,62 @@ const runtime = {
 
 /* ---------- helpers ---------- */
 
+/* Suggestion chips catalog — contextual to active profile */
+const SUGGESTION_CATALOG = {
+  dev: [
+    { label: "Revisar este código", prompt: "Revise o código a seguir e aponte melhorias de qualidade, performance e segurança:\n\n" },
+    { label: "Escrever testes", prompt: "Escreva testes unitários para o código a seguir, cobrindo casos de sucesso e de erro:\n\n" },
+    { label: "Explicar este erro", prompt: "Explique o seguinte erro e sugira como corrigi-lo:\n\n" },
+    { label: "Refatorar função", prompt: "Refatore a função a seguir para melhorar legibilidade e manutenibilidade:\n\n" },
+    { label: "Documentar código", prompt: "Adicione documentação clara (JSDoc/docstring) ao código a seguir:\n\n" },
+  ],
+  general: [
+    { label: "Resumir um texto", prompt: "Resuma o seguinte texto de forma clara e objetiva:\n\n" },
+    { label: "Planejar estudos", prompt: "Crie um plano de estudos objetivo para aprender " },
+    { label: "Escrever melhor", prompt: "Me ajude a reescrever o seguinte trecho de forma mais clara e direta:\n\n" },
+    { label: "Brainstorm de ideias", prompt: "Me ajude a gerar ideias criativas para o seguinte problema:\n\n" },
+    { label: "Analisar prós e contras", prompt: "Liste os prós e contras da seguinte decisão:\n\n" },
+  ],
+};
+
+const DEV_KEYWORDS = [
+  "código", "code", "engenheiro", "engineer", "developer", "desenvolvedor",
+  "python", "typescript", "javascript", "react", "vue", "angular", "rust", "go", "java",
+  "programação", "programming", "software", "api", "backend", "frontend", "fullstack",
+  "debug", "teste", "test", "função", "function", "classe", "class", "script",
+];
+
+function classifyProfile(profile) {
+  if (!profile?.systemPrompt) return "general";
+  const lower = profile.systemPrompt.toLowerCase();
+  return DEV_KEYWORDS.some((kw) => lower.includes(kw)) ? "dev" : "general";
+}
+
+function getChipsForProfile(profile) {
+  const category = classifyProfile(profile);
+  return SUGGESTION_CATALOG[category].slice(0, 3);
+}
+
+function refreshSuggestionChips() {
+  const container = elements.emptyState?.querySelector(".suggestions");
+  if (!container) return;
+  const profile = getActiveProfile();
+  const chips = getChipsForProfile(profile);
+  container.replaceChildren();
+  for (const chip of chips) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "suggestion-chip";
+    btn.dataset.prompt = chip.prompt;
+    btn.textContent = chip.label;
+    btn.addEventListener("click", () => {
+      setComposerValue(chip.prompt);
+      focusComposer();
+    });
+    container.appendChild(btn);
+  }
+}
+
 function getActiveServer() {
   const conn = store.get("connection");
   return conn.servers.find((s) => s.id === conn.activeServerId) || conn.servers[0];
@@ -119,6 +175,7 @@ function refreshChips() {
   const profile = getActiveProfile();
   elements.modelChipLabel.textContent = profile?.defaultModel || "Sem modelo";
   elements.profileChipLabel.textContent = profile ? `${profile.icon || ""} ${profile.name}`.trim() : "Perfil";
+  refreshSuggestionChips();
 }
 
 function setStatus(kind, label) {
@@ -572,6 +629,9 @@ async function submitMessage(rawText) {
   runtime.currentConversation.messages.push(assistantMsg);
   const { body: assistantBody } = renderMessage(assistantMsg, { streaming: true });
 
+  // start generation timer
+  const timerHandle = startGenerationTimer(assistantBody);
+
   // build payload
   const useStreaming = store.get("advanced.streaming");
   const sampling = buildSamplingPayload(profile.sampling);
@@ -603,6 +663,7 @@ async function submitMessage(rawText) {
         assistantContent = full.content;
         assistantReasoning = full.reasoning;
         appendStreamingDelta(assistantBody, full.content, full.reasoning);
+        timerHandle.setTokenCount(estimateTokens(full.content));
       }
     );
     assistantContent = result.content;
@@ -671,19 +732,22 @@ async function submitMessage(rawText) {
       assistantContent += `\n\n⚠ (truncado — bateu max_tokens. Aumente em Configurações → Modelo)`;
     }
 
-    finalizeAssistant(assistantBody, assistantContent, false, assistantReasoning, { usage, finishReason });
+    stopGenerationTimer(timerHandle);
+    finalizeAssistant(assistantBody, assistantContent, false, assistantReasoning, { usage, finishReason, elapsed: timerHandle.getElapsed() });
     assistantMsg.content = assistantContent;
     if (assistantReasoning) assistantMsg.reasoning = assistantReasoning;
     setStatus("connected", "Pronto");
   } catch (error) {
     if (error?.name === "AbortError") {
       const interrupted = assistantContent ? `${assistantContent}\n\n[Interrompido]` : "Interrompido.";
-      finalizeAssistant(assistantBody, interrupted, false, assistantReasoning);
+      stopGenerationTimer(timerHandle);
+      finalizeAssistant(assistantBody, interrupted, false, assistantReasoning, { elapsed: timerHandle.getElapsed() });
       assistantMsg.content = interrupted;
       if (assistantReasoning) assistantMsg.reasoning = assistantReasoning;
       setStatus("connected", "Interrompido");
     } else {
       const detail = formatFetchError(error);
+      stopGenerationTimer(timerHandle);
       finalizeAssistant(assistantBody, detail, true);
       assistantMsg.content = detail;
       setStatus("error", "Erro");
@@ -702,12 +766,19 @@ async function submitMessage(rawText) {
 
 async function handleSidebarAction({ action, conversation }) {
   if (action === "rename") {
+    // Inline rename is handled directly in sidebar.js — this branch is a fallback
+    // for cases where the DOM element is not available (e.g., element was removed)
     const next = prompt("Novo título:", conversation.title);
     if (next && next.trim()) {
       conversation.title = next.trim();
       conversation.updatedAt = Date.now();
       await conversationStore.upsert(conversation);
       refreshSidebar();
+    }
+  } else if (action === "rename-done") {
+    // Inline rename completed in sidebar.js — sync runtime state if this is the active conversation
+    if (runtime.currentConversation?.id === conversation.id) {
+      runtime.currentConversation.title = conversation.title;
     }
   } else if (action === "delete") {
     if (store.get("behavior.confirmOnDelete") && !confirm(`Excluir "${conversation.title}"?`)) return;
@@ -764,11 +835,13 @@ async function handleMessageAction({ action, message, node, body }) {
     saveCurrentConversation();
     recomputeHistoryTokens();
     toggleEmptyState();
-  } else if (action === "edit") {
-    const next = prompt("Editar mensagem:", message.content);
-    if (next != null && next !== message.content) {
-      message.content = next;
-      setBodyContent(body, next, false);
+  } else if (action === "edit-save") {
+    // Inline editor saved — persist the updated content
+    const conv = runtime.currentConversation;
+    if (!conv) return;
+    const msg = conv.messages.find((m) => m.id === message?.id);
+    if (msg) {
+      msg.content = message.content; // already updated by closeInlineEditor
       saveCurrentConversation();
       recomputeHistoryTokens();
     }
@@ -872,6 +945,20 @@ async function init() {
     onSelect: loadConversation,
     onNew: newConversation,
     onAction: handleSidebarAction,
+    getEmbedConfig: () => {
+      try {
+        const server = getActiveServer();
+        const model = store.get("rag.embeddingModel");
+        if (!model || !server?.baseUrl) return null;
+        return {
+          baseUrl: normalizeBaseUrl(server.baseUrl),
+          apiKey: server.apiKey || "",
+          model,
+        };
+      } catch {
+        return null;
+      }
+    },
   });
   initPalette();
   initSettings({
@@ -882,14 +969,6 @@ async function init() {
     onProfileChange: () => { refreshChips(); applyAppearance(store.get("appearance")); },
   });
   initWorkspace({ elements, store });
-
-  // suggestions
-  document.querySelectorAll(".suggestion-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      setComposerValue(chip.dataset.prompt || "");
-      focusComposer();
-    });
-  });
 
   // topbar
   elements.sidebarToggle.addEventListener("click", toggleSidebar);
