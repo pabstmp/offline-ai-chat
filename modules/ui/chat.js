@@ -3,6 +3,23 @@
 
 import { renderMarkdown } from "../markdown.js";
 
+/* ---------- pure functions (re-exported from chat-helpers.js for testability) ---------- */
+export {
+  forkMessagesAt,
+  createFork,
+  getAlternativeProfiles,
+  replaceMessageContent,
+  getBodyOverflowForModal,
+} from "./chat-helpers.js";
+
+import {
+  forkMessagesAt,
+  createFork,
+  getAlternativeProfiles,
+  replaceMessageContent,
+  getBodyOverflowForModal,
+} from "./chat-helpers.js";
+
 let elements = null;
 let state = null;
 let store = null;
@@ -93,6 +110,8 @@ export function renderMessage(message, options = {}) {
   for (const [act, label] of [
     ["copy", "Copiar"],
     message.role === "assistant" ? ["regen", "Regenerar"] : null,
+    message.role === "assistant" ? ["fork", "Continuar daqui"] : null,
+    ["focus", "Foco"],
     ["edit", "Editar"],
     ["delete", "Excluir"],
   ].filter(Boolean)) {
@@ -103,6 +122,8 @@ export function renderMessage(message, options = {}) {
     btn.textContent = label;
     if (act === "edit") {
       btn.addEventListener("click", () => openInlineEditor(node, body, message));
+    } else if (act === "regen") {
+      btn.addEventListener("click", (e) => openRegenMenu(e, btn, message, node, body));
     } else {
       btn.addEventListener("click", () =>
         onAction({ action: act, messageId: message.id, node, body, message })
@@ -121,6 +142,56 @@ export function renderMessage(message, options = {}) {
   scrollToBottom();
 
   return { node, body };
+}
+
+/* ---------- regen mini-menu ---------- */
+
+function openRegenMenu(e, anchor, message, node, body) {
+  e.stopPropagation();
+  const existing = document.getElementById("regen-menu");
+  if (existing) { existing.remove(); return; }
+
+  const menu = document.createElement("div");
+  menu.id = "regen-menu";
+  menu.className = "palette-list";
+  menu.style.position = "absolute";
+  menu.style.background = "var(--bg-0)";
+  menu.style.border = "1px solid var(--line)";
+  menu.style.borderRadius = "var(--r-md)";
+  menu.style.padding = "var(--s-1)";
+  menu.style.boxShadow = "var(--shadow-2)";
+  menu.style.zIndex = "20";
+  menu.style.minWidth = "220px";
+
+  for (const [act, label] of [
+    ["regen", "Regenerar (mesmo perfil)"],
+    ["ab-start", "Comparar com outro perfil"],
+  ]) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "palette-item";
+    b.style.width = "100%";
+    b.style.textAlign = "left";
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      menu.remove();
+      onAction({ action: act, messageId: message.id, node, body, message });
+    });
+    menu.appendChild(b);
+  }
+
+  const rect = anchor.getBoundingClientRect();
+  menu.style.left = `${rect.left}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
+  document.body.appendChild(menu);
+
+  const close = (ev) => {
+    if (!menu.contains(ev.target)) {
+      menu.remove();
+      document.removeEventListener("click", close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
 }
 
 /* ---------- inline editor ---------- */
@@ -207,11 +278,38 @@ function closeInlineEditor(save) {
 }
 
 /* Set body content: streaming uses raw <pre>, finalized uses markdown render.
-   Optional reasoning is rendered as a collapsible "thinking" block above content. */
+   Optional reasoning is rendered as a collapsible "thinking" block above content.
+   Content can be a string or an OpenAI-compatible array (for image messages). */
 export function setBodyContent(body, content, streaming = false, reasoning = "") {
   body.replaceChildren();
   if (reasoning) {
     body.appendChild(buildReasoningBlock(reasoning, streaming));
+  }
+  // Handle array content (image messages)
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (part.type === "image_url" && part.image_url?.url) {
+        const img = document.createElement("img");
+        img.src = part.image_url.url;
+        img.alt = "Imagem anexada";
+        img.style.maxWidth = "100%";
+        img.style.maxHeight = "300px";
+        img.style.borderRadius = "var(--r-md)";
+        img.style.display = "block";
+        img.style.marginBottom = "var(--s-2)";
+        body.appendChild(img);
+      } else if (part.type === "text" && part.text) {
+        if (streaming) {
+          const pre = document.createElement("pre");
+          pre.className = "streaming msg-stream-content";
+          pre.appendChild(document.createTextNode(part.text));
+          body.appendChild(pre);
+        } else {
+          body.appendChild(renderMarkdown(part.text));
+        }
+      }
+    }
+    return;
   }
   if (streaming) {
     const pre = document.createElement("pre");

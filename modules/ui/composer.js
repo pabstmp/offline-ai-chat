@@ -3,11 +3,30 @@
 
 import { estimateTokens } from "../markdown.js";
 
+/* ---------- pure functions (re-exported from composer-helpers.js for testability) ---------- */
+export { validateImageSize, buildImageMessageContent } from "./composer-helpers.js";
+
+import { validateImageSize, buildImageMessageContent } from "./composer-helpers.js";
+
 let elements = null;
 let store = null;
 let onSubmit = null;
 let onSlashSelect = null;
 let lastLength = -1;
+
+/* ---------- pending image state ---------- */
+let pendingImage = null; // { base64, mimeType, name } | null
+
+export function getPendingImage() {
+  return pendingImage;
+}
+
+export function clearPendingImage() {
+  pendingImage = null;
+  // Remove preview from DOM if present
+  const preview = document.getElementById("composer-image-preview");
+  if (preview) preview.remove();
+}
 
 export function initComposer(opts) {
   elements = opts.elements;
@@ -43,10 +62,107 @@ export function initComposer(opts) {
   elements.chatForm.addEventListener("submit", (e) => {
     e.preventDefault();
     let text = elements.promptInput.value.trim();
-    if (!text) return;
+    if (!text && !pendingImage) return;
     text = applySlashCommandExpansion(text);
     onSubmit(text);
   });
+
+  // Add image upload button after attachButton
+  addImageUploadButton();
+}
+
+/* ---------- image upload ---------- */
+
+function addImageUploadButton() {
+  if (!elements.attachButton) return;
+  // Don't add twice
+  if (document.getElementById("imageUploadButton")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "imageUploadButton";
+  btn.type = "button";
+  btn.className = "icon-button";
+  btn.style.width = "28px";
+  btn.style.height = "28px";
+  btn.setAttribute("aria-label", "Anexar imagem");
+  btn.title = "Anexar imagem";
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`;
+
+  btn.addEventListener("click", () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/png,image/jpeg,image/gif,image/webp";
+    inp.addEventListener("change", () => {
+      const file = inp.files[0];
+      if (!file) return;
+      handleImageFile(file);
+    });
+    inp.click();
+  });
+
+  // Insert after attachButton
+  elements.attachButton.insertAdjacentElement("afterend", btn);
+}
+
+function handleImageFile(file) {
+  const ALLOWED_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    // toast is not available here — use a custom event or just skip
+    console.warn("Tipo de imagem não suportado:", file.type);
+    return;
+  }
+  if (!validateImageSize(file.size)) {
+    // Signal error via a custom event that app.js can listen to
+    document.dispatchEvent(new CustomEvent("composer:image-error", {
+      detail: { message: "Imagem muito grande. Limite: 10 MB." }
+    }));
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    const dataUrl = e.target.result;
+    // Extract base64 data (remove "data:mime;base64," prefix)
+    const base64 = dataUrl.split(",")[1];
+    pendingImage = { base64, mimeType: file.type, name: file.name };
+    showImagePreview(dataUrl);
+  };
+  reader.onerror = () => {
+    document.dispatchEvent(new CustomEvent("composer:image-error", {
+      detail: { message: "Erro ao ler imagem." }
+    }));
+  };
+  reader.readAsDataURL(file);
+}
+
+function showImagePreview(dataUrl) {
+  // Remove existing preview
+  const existing = document.getElementById("composer-image-preview");
+  if (existing) existing.remove();
+
+  const preview = document.createElement("div");
+  preview.id = "composer-image-preview";
+  preview.className = "composer-image-preview";
+
+  const img = document.createElement("img");
+  img.src = dataUrl;
+  img.alt = "Preview da imagem";
+
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "composer-image-preview-remove";
+  removeBtn.setAttribute("aria-label", "Remover imagem");
+  removeBtn.textContent = "×";
+  removeBtn.addEventListener("click", () => clearPendingImage());
+
+  preview.appendChild(img);
+  preview.appendChild(removeBtn);
+
+  // Insert before the textarea inside composer-frame
+  const frame = elements.chatForm.querySelector(".composer-frame");
+  if (frame) {
+    frame.insertBefore(preview, frame.firstChild);
+  }
 }
 
 export function clearComposer() {

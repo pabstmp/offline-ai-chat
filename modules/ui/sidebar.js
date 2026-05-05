@@ -345,6 +345,7 @@ function openMenu(conv, anchor, titleEl) {
 
   for (const [act, label] of [
     ["rename", "Renomear"],
+    ["save-template", "Salvar como template"],
     ["export-json", "Exportar JSON"],
     ["export-md", "Exportar Markdown"],
     ["delete", "Excluir"],

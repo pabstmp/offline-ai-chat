@@ -20,10 +20,13 @@ import {
   setBodyContent, appendStreamingDelta, finalizeAssistant,
   scrollToBottom, startGenerationTimer, stopGenerationTimer,
 } from "./modules/ui/chat.js";
+import { forkMessagesAt, createFork } from "./modules/ui/chat-helpers.js";
+import { getAlternativeProfiles, replaceMessageContent } from "./modules/ui/chat-helpers.js";
 import {
   initComposer, clearComposer, focusComposer, setBusy as setComposerBusy,
-  setComposerValue, setHistoryTokens,
+  setComposerValue, setHistoryTokens, getPendingImage, clearPendingImage,
 } from "./modules/ui/composer.js";
+import { buildImageMessageContent } from "./modules/ui/composer-helpers.js";
 import {
   initSidebar, refreshSidebar, setActiveConversation, toggleSidebar, closeSidebar,
 } from "./modules/ui/sidebar.js";
@@ -34,6 +37,9 @@ import {
   injectContextIntoMessage, isPersistAcrossMessages, clearFiles, listFiles,
 } from "./modules/workspace/context.js";
 import * as rag from "./modules/rag/manager.js";
+import { templateStore, createTemplate, initConversationFromTemplate } from "./modules/templates.js";
+import { ragIndicatorShouldShow, shouldShowServerDropdown, nextServerIndex, shouldAutoScroll, getScrollPosition } from "./modules/app-helpers.js";
+import { getBodyOverflowForModal } from "./modules/ui/chat-helpers.js";
 
 /* ---------- elements ---------- */
 
@@ -50,6 +56,7 @@ const elements = {
   statusPill: $("#statusPill"),
   statusDot: $("#statusDot"),
   statusLabel: $("#statusLabel"),
+  ragIndexingIndicator: $("#ragIndexingIndicator"),
   workspaceToggle: $("#workspaceToggle"),
   paletteButton: $("#paletteButton"),
   settingsButton: $("#settingsButton"),
@@ -92,13 +99,17 @@ const debouncedPersist = debounce(() => persist(store.raw()), 250);
 // boot + soft migrations like max_tokens default upgrade).
 persist(initial);
 
-/* ---------- runtime state ---------- */
+/* ---------- scroll position cache ---------- */
+const scrollCache = new Map(); // conversationId → scrollTop
+
+
 
 const runtime = {
   abortController: null,
   busy: false,
   currentConversation: null, // { id, title, messages, ... }
   models: [],
+  abState: null, // { messageId, originalContent, alternativeContent, alternativeProfileId, node, body }
 };
 
 /* ---------- helpers ---------- */
@@ -190,7 +201,39 @@ function toggleEmptyState() {
 
 /* ---------- conversations ---------- */
 
-function newConversation() {
+function newConversation(templateId = null) {
+  const templates = templateStore.list();
+
+  // If a specific template was requested, apply it directly
+  if (templateId) {
+    const tpl = templates.find((t) => t.id === templateId);
+    if (tpl) {
+      const base = {
+        id: `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        title: `(${tpl.name})`,
+        profileId: store.get("activeProfileId"),
+        serverId: store.get("connection.activeServerId"),
+        model: getActiveProfile()?.defaultModel,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [],
+      };
+      runtime.currentConversation = initConversationFromTemplate(tpl, base);
+      renderAllMessages(runtime.currentConversation.messages || []);
+      toggleEmptyState();
+      setActiveConversation(runtime.currentConversation.id);
+      setHistoryTokens(0);
+      return;
+    }
+  }
+
+  // If templates exist and no specific one was requested, show selector
+  if (templates.length > 0 && templateId === null) {
+    showTemplateSelector(templates);
+    return;
+  }
+
+  // Plain new conversation
   runtime.currentConversation = {
     id: `conv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title: "(nova conversa)",
@@ -207,6 +250,86 @@ function newConversation() {
   setHistoryTokens(0);
 }
 
+function showTemplateSelector(templates) {
+  const existing = document.getElementById("template-selector");
+  if (existing) existing.remove();
+
+  const menu = document.createElement("div");
+  menu.id = "template-selector";
+  menu.className = "palette-list";
+  menu.style.position = "fixed";
+  menu.style.background = "var(--bg-0)";
+  menu.style.border = "1px solid var(--line)";
+  menu.style.borderRadius = "var(--r-md)";
+  menu.style.padding = "var(--s-1)";
+  menu.style.boxShadow = "var(--shadow-3)";
+  menu.style.zIndex = "30";
+  menu.style.minWidth = "240px";
+  menu.style.maxHeight = "320px";
+  menu.style.overflowY = "auto";
+
+  // Header
+  const header = document.createElement("div");
+  header.style.padding = "var(--s-2) var(--s-3)";
+  header.style.fontSize = "var(--fs-xs)";
+  header.style.color = "var(--fg-2)";
+  header.style.fontWeight = "600";
+  header.style.textTransform = "uppercase";
+  header.style.letterSpacing = "0.06em";
+  header.textContent = "Iniciar com template";
+  menu.appendChild(header);
+
+  // Blank option
+  const blankBtn = document.createElement("button");
+  blankBtn.type = "button";
+  blankBtn.className = "palette-item";
+  blankBtn.style.width = "100%";
+  blankBtn.style.textAlign = "left";
+  blankBtn.textContent = "Em branco";
+  blankBtn.addEventListener("click", () => { menu.remove(); newConversation("__blank__"); });
+  menu.appendChild(blankBtn);
+
+  // Template options
+  for (const tpl of templates) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "palette-item";
+    btn.style.width = "100%";
+    btn.style.textAlign = "left";
+    const nameEl = document.createElement("span");
+    nameEl.textContent = tpl.name;
+    const countEl = document.createElement("span");
+    countEl.style.color = "var(--fg-2)";
+    countEl.style.fontSize = "var(--fs-xs)";
+    countEl.style.marginLeft = "var(--s-2)";
+    countEl.textContent = `${(tpl.messages || []).length} msg(s)`;
+    btn.appendChild(nameEl);
+    btn.appendChild(countEl);
+    btn.addEventListener("click", () => { menu.remove(); newConversation(tpl.id); });
+    menu.appendChild(btn);
+  }
+
+  // Position near the new chat button
+  const anchor = elements.newChatButton;
+  if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.left = `${rect.left}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  } else {
+    menu.style.left = "16px";
+    menu.style.top = "60px";
+  }
+  document.body.appendChild(menu);
+
+  const close = (e) => {
+    if (!menu.contains(e.target)) {
+      menu.remove();
+      document.removeEventListener("click", close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
+}
+
 async function loadConversation(id) {
   const conv = await conversationStore.get(id);
   if (!conv) return;
@@ -216,6 +339,15 @@ async function loadConversation(id) {
   setActiveConversation(id);
   closeSidebar();
   recomputeHistoryTokens();
+  // Restore scroll position if cached, otherwise scroll to bottom
+  requestAnimationFrame(() => {
+    const saved = getScrollPosition(scrollCache, id);
+    if (saved !== null) {
+      elements.messages.scrollTop = saved;
+    } else {
+      elements.messages.scrollTop = elements.messages.scrollHeight;
+    }
+  });
 }
 
 async function saveCurrentConversation() {
@@ -235,7 +367,12 @@ async function saveCurrentConversation() {
 function recomputeHistoryTokens() {
   if (!runtime.currentConversation) { setHistoryTokens(0); return; }
   let total = 0;
-  for (const m of runtime.currentConversation.messages) total += estimateTokens(m.content);
+  for (const m of runtime.currentConversation.messages) {
+    const content = Array.isArray(m.content)
+      ? m.content.filter((p) => p.type === "text").map((p) => p.text).join(" ")
+      : (m.content || "");
+    total += estimateTokens(content);
+  }
   setHistoryTokens(total);
 }
 
@@ -617,12 +754,20 @@ async function submitMessage(rawText) {
   runtime.busy = true;
   runtime.abortController = new AbortController();
 
-  // user message
-  const userMsg = { role: "user", content: rawText, ts: Date.now(), id: `m-${Date.now()}-u` };
+  // user message — check for pending image
+  const pendingImg = getPendingImage();
+  let userMsgContent;
+  if (pendingImg) {
+    userMsgContent = buildImageMessageContent(rawText, pendingImg.base64, pendingImg.mimeType);
+  } else {
+    userMsgContent = rawText;
+  }
+  const userMsg = { role: "user", content: userMsgContent, ts: Date.now(), id: `m-${Date.now()}-u` };
   runtime.currentConversation.messages.push(userMsg);
   renderMessage(userMsg);
   toggleEmptyState();
   clearComposer();
+  if (pendingImg) clearPendingImage();
 
   // assistant placeholder — IMPORTANT: also push to conversation so it persists
   const assistantMsg = { role: "assistant", content: "", ts: Date.now(), id: `m-${Date.now()}-a` };
@@ -796,6 +941,14 @@ async function handleSidebarAction({ action, conversation }) {
   } else if (action === "export-md") {
     const md = conversationToMarkdown(conversation);
     downloadFile(`${conversation.title || conversation.id}.md`, md, "text/markdown");
+  } else if (action === "save-template") {
+    const name = prompt("Nome do template:", conversation.title || "Meu template");
+    if (!name || !name.trim()) return;
+    const profile = getActiveProfile();
+    const tpl = createTemplate(conversation, name.trim(), profile?.systemPrompt || "");
+    const existing = templateStore.list();
+    templateStore.save([...existing, tpl]);
+    toast(`Template "${name.trim()}" salvo.`, "success");
   }
 }
 
@@ -818,6 +971,192 @@ function downloadFile(filename, content, mime) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 0);
+}
+
+/* ---------- A/B comparison helpers ---------- */
+
+function showProfileSelector(profiles, message, node, body) {
+  const existing = document.getElementById("ab-profile-selector");
+  if (existing) existing.remove();
+
+  const menu = document.createElement("div");
+  menu.id = "ab-profile-selector";
+  menu.className = "palette-list";
+  menu.style.position = "fixed";
+  menu.style.background = "var(--bg-0)";
+  menu.style.border = "1px solid var(--line)";
+  menu.style.borderRadius = "var(--r-md)";
+  menu.style.padding = "var(--s-1)";
+  menu.style.boxShadow = "var(--shadow-2)";
+  menu.style.zIndex = "30";
+  menu.style.minWidth = "220px";
+
+  const title = document.createElement("div");
+  title.style.padding = "var(--s-2) var(--s-3)";
+  title.style.fontSize = "var(--fs-xs)";
+  title.style.color = "var(--fg-2)";
+  title.style.fontWeight = "600";
+  title.textContent = "Selecionar perfil alternativo:";
+  menu.appendChild(title);
+
+  for (const profile of profiles) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "palette-item";
+    b.style.width = "100%";
+    b.style.textAlign = "left";
+    b.textContent = `${profile.icon || "👤"} ${profile.name}`;
+    b.addEventListener("click", () => {
+      menu.remove();
+      generateABResponse(profile, message, node, body);
+    });
+    menu.appendChild(b);
+  }
+
+  // Position near the message node
+  const rect = node.getBoundingClientRect();
+  menu.style.left = `${Math.min(rect.left + 40, window.innerWidth - 240)}px`;
+  menu.style.top = `${rect.top + 40}px`;
+  document.body.appendChild(menu);
+
+  const close = (ev) => {
+    if (!menu.contains(ev.target)) {
+      menu.remove();
+      document.removeEventListener("click", close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
+}
+
+async function generateABResponse(altProfile, message, node, body) {
+  const conv = runtime.currentConversation;
+  if (!conv) return;
+
+  const server = getActiveServer();
+  if (!server?.baseUrl) { toast("Configure um servidor primeiro.", "warn"); return; }
+  let baseUrl;
+  try { baseUrl = normalizeBaseUrl(server.baseUrl); } catch { toast("URL inválida.", "error"); return; }
+
+  // Find the previous user message
+  const idx = conv.messages.findIndex((m) => m.id === message.id);
+  if (idx < 0) return;
+  const previousUser = [...conv.messages.slice(0, idx)].reverse().find((m) => m.role === "user");
+  if (!previousUser) { toast("Mensagem do usuário não encontrada.", "warn"); return; }
+
+  const originalContent = message.content;
+  runtime.abState = { messageId: message.id, originalContent, node, body };
+
+  // Build payload with alternative profile
+  const sampling = buildSamplingPayload(altProfile.sampling);
+  const messages = [];
+  if (altProfile.systemPrompt) messages.push({ role: "system", content: altProfile.systemPrompt });
+  for (const m of conv.messages.slice(0, idx)) {
+    messages.push({ role: m.role, content: m.content });
+  }
+  messages.push({ role: "user", content: previousUser.content });
+
+  const model = altProfile.defaultModel || (runtime.models[0] || "");
+  const payload = { messages, model, stream: false, ...sampling };
+
+  // Show loading state in A/B layout
+  const abLayout = buildABLayout(message.id, originalContent, null, altProfile.name);
+  node.insertAdjacentElement("afterend", abLayout);
+
+  try {
+    const result = await requestCompletion({ baseUrl, apiKey: server.apiKey, payload });
+    const altContent = result.content || "(sem resposta)";
+    runtime.abState.alternativeContent = altContent;
+    runtime.abState.alternativeProfileId = altProfile.id;
+
+    // Update A/B layout with the alternative content
+    abLayout.remove();
+    const finalLayout = buildABLayout(message.id, originalContent, altContent, altProfile.name, message, node, body);
+    node.insertAdjacentElement("afterend", finalLayout);
+  } catch (err) {
+    abLayout.remove();
+    runtime.abState = null;
+    toast("Erro ao gerar resposta alternativa: " + err.message, "error");
+  }
+}
+
+function buildABLayout(messageId, originalContent, altContent, altProfileName, message, node, body) {
+  const wrap = document.createElement("div");
+  wrap.id = `ab-${messageId}`;
+  wrap.className = "ab-comparison";
+
+  const activeProfile = getActiveProfile();
+
+  // Column A — original
+  const colA = document.createElement("div");
+  colA.className = "ab-col";
+  const headerA = document.createElement("div");
+  headerA.className = "ab-col-header";
+  headerA.textContent = `Perfil: ${activeProfile?.name || "Atual"}`;
+  const bodyA = document.createElement("div");
+  bodyA.className = "msg-body";
+  if (originalContent) {
+    try { bodyA.appendChild(renderMarkdown(originalContent)); }
+    catch { bodyA.textContent = originalContent; }
+  }
+  colA.appendChild(headerA);
+  colA.appendChild(bodyA);
+
+  // Column B — alternative
+  const colB = document.createElement("div");
+  colB.className = "ab-col";
+  const headerB = document.createElement("div");
+  headerB.className = "ab-col-header";
+  headerB.textContent = `Perfil: ${altProfileName}`;
+  const bodyB = document.createElement("div");
+  bodyB.className = "msg-body";
+  if (altContent) {
+    try { bodyB.appendChild(renderMarkdown(altContent)); }
+    catch { bodyB.textContent = altContent; }
+  } else {
+    bodyB.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+  }
+  colB.appendChild(headerB);
+  colB.appendChild(bodyB);
+
+  wrap.appendChild(colA);
+  wrap.appendChild(colB);
+
+  // Action buttons (only when both responses are available)
+  if (altContent && message && node && body) {
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "ab-actions";
+
+    const useA = document.createElement("button");
+    useA.type = "button";
+    useA.className = "btn btn-sm btn-secondary";
+    useA.textContent = "Usar esta (original)";
+    useA.addEventListener("click", () => {
+      handleMessageAction({ action: "ab-choose", message: { id: messageId, chosenContent: originalContent }, node, body });
+    });
+
+    const useB = document.createElement("button");
+    useB.type = "button";
+    useB.className = "btn btn-sm btn-primary";
+    useB.textContent = "Usar esta (alternativa)";
+    useB.addEventListener("click", () => {
+      handleMessageAction({ action: "ab-choose", message: { id: messageId, chosenContent: altContent }, node, body });
+    });
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "btn btn-sm btn-ghost";
+    cancel.textContent = "Cancelar";
+    cancel.addEventListener("click", () => {
+      handleMessageAction({ action: "ab-cancel", message: { id: messageId }, node, body });
+    });
+
+    actionsRow.appendChild(useA);
+    actionsRow.appendChild(useB);
+    actionsRow.appendChild(cancel);
+    wrap.appendChild(actionsRow);
+  }
+
+  return wrap;
 }
 
 /* ---------- message actions ---------- */
@@ -857,7 +1196,215 @@ async function handleMessageAction({ action, message, node, body }) {
     conv.messages.splice(idx, 1);
     node.remove();
     submitMessage(previousUser.content);
+  } else if (action === "fork") {
+    const conv = runtime.currentConversation;
+    if (!conv) return;
+    try {
+      const forkedMessages = forkMessagesAt(conv.messages, message.id);
+      const newConv = createFork(conv, forkedMessages);
+      await conversationStore.upsert(newConv);
+      await refreshSidebar();
+      await loadConversation(newConv.id);
+      toast(`Fork criado: "${newConv.title}"`, "success");
+    } catch (err) {
+      toast("Erro ao criar fork: " + err.message, "error");
+    }
+  } else if (action === "ab-start") {
+    if (runtime.busy) return;
+    const conv = runtime.currentConversation;
+    if (!conv) return;
+    const profiles = store.get("profiles") || [];
+    const activeProfileId = store.get("activeProfileId");
+    const alternatives = getAlternativeProfiles(profiles, activeProfileId);
+    if (!alternatives.length) {
+      toast("Nenhum perfil alternativo disponível. Adicione perfis em Configurações.", "warn");
+      return;
+    }
+    // Show profile selector dropdown
+    showProfileSelector(alternatives, message, node, body);
+  } else if (action === "ab-choose") {
+    const conv = runtime.currentConversation;
+    if (!conv || !runtime.abState) return;
+    const { messageId, chosenContent } = message; // message here carries the chosen content
+    const updated = replaceMessageContent(conv.messages, messageId, chosenContent);
+    conv.messages = updated;
+    await conversationStore.upsert(conv);
+    // Remove A/B layout and re-render the message
+    const abLayout = document.getElementById(`ab-${messageId}`);
+    if (abLayout) abLayout.remove();
+    // Re-render the original message node with new content
+    if (runtime.abState?.node) {
+      const msgObj = conv.messages.find((m) => m.id === messageId);
+      if (msgObj) {
+        setBodyContent(runtime.abState.body, msgObj.content, false);
+      }
+    }
+    runtime.abState = null;
+    toast("Resposta selecionada.", "success");
+  } else if (action === "ab-cancel") {
+    const abLayout = document.getElementById(`ab-${message.id}`);
+    if (abLayout) abLayout.remove();
+    runtime.abState = null;
+  } else if (action === "focus") {
+    openFocusModal(message);
   }
+}
+
+/* ---------- focus modal ---------- */
+
+function openFocusModal(message) {
+  const existing = document.getElementById("focus-modal-overlay");
+  if (existing) existing.remove();
+
+  const previousOverflow = document.body.style.overflow;
+  document.body.style.overflow = getBodyOverflowForModal(true, previousOverflow);
+
+  const overlay = document.createElement("div");
+  overlay.id = "focus-modal-overlay";
+  overlay.className = "focus-modal-overlay";
+
+  const content = document.createElement("div");
+  content.className = "focus-modal-content";
+
+  const header = document.createElement("div");
+  header.className = "focus-modal-header";
+
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.className = "btn btn-sm btn-secondary";
+  copyBtn.textContent = "Copiar";
+  copyBtn.addEventListener("click", () => {
+    const text = Array.isArray(message.content)
+      ? message.content.filter((p) => p.type === "text").map((p) => p.text).join("\n")
+      : (message.content || "");
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.textContent = "Copiado ✓";
+        setTimeout(() => { copyBtn.textContent = "Copiar"; }, 2000);
+      }).catch(() => toast("Não foi possível copiar.", "warn"));
+    } else {
+      toast("Clipboard não disponível.", "warn");
+    }
+  });
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "icon-button";
+  closeBtn.setAttribute("aria-label", "Fechar");
+  closeBtn.innerHTML = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+  closeBtn.addEventListener("click", closeFocusModal);
+
+  header.appendChild(copyBtn);
+  header.appendChild(closeBtn);
+
+  const body = document.createElement("div");
+  body.className = "focus-modal-body";
+  // Render content
+  const text = Array.isArray(message.content)
+    ? message.content.filter((p) => p.type === "text").map((p) => p.text).join("\n")
+    : (message.content || "");
+  try {
+    body.appendChild(renderMarkdown(text));
+  } catch {
+    body.textContent = text;
+  }
+
+  content.appendChild(header);
+  content.appendChild(body);
+  overlay.appendChild(content);
+  document.body.appendChild(overlay);
+
+  // Close on overlay click (outside content)
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) closeFocusModal();
+  });
+
+  // Close on Escape
+  const onKeydown = (e) => {
+    if (e.key === "Escape") { closeFocusModal(); document.removeEventListener("keydown", onKeydown); }
+  };
+  document.addEventListener("keydown", onKeydown);
+
+  function closeFocusModal() {
+    overlay.remove();
+    document.body.style.overflow = getBodyOverflowForModal(false, previousOverflow);
+    document.removeEventListener("keydown", onKeydown);
+  }
+}
+
+/* ---------- server dropdown ---------- */
+
+function openServerDropdown(servers, activeServerId) {
+  const existing = document.getElementById("server-dropdown");
+  if (existing) { existing.remove(); return; }
+
+  const dropdown = document.createElement("div");
+  dropdown.id = "server-dropdown";
+  dropdown.className = "server-dropdown";
+
+  let selectedIndex = servers.findIndex((s) => s.id === activeServerId);
+  if (selectedIndex < 0) selectedIndex = 0;
+
+  function renderItems() {
+    dropdown.replaceChildren();
+    servers.forEach((server, idx) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "server-dropdown-item" + (server.id === activeServerId ? " active" : "");
+      item.dataset.idx = idx;
+
+      const check = document.createElement("span");
+      check.className = "server-dropdown-check";
+      check.textContent = server.id === activeServerId ? "✓" : " ";
+
+      const name = document.createElement("span");
+      name.textContent = server.nickname || server.baseUrl || `Servidor ${idx + 1}`;
+
+      item.appendChild(check);
+      item.appendChild(name);
+      item.addEventListener("click", () => {
+        dropdown.remove();
+        if (server.id !== activeServerId) {
+          store.set("connection.activeServerId", server.id);
+          loadModels().catch(() => {});
+        }
+      });
+      dropdown.appendChild(item);
+    });
+  }
+
+  renderItems();
+
+  // Keyboard navigation
+  dropdown.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedIndex = nextServerIndex(selectedIndex, servers.length, 1);
+      dropdown.querySelectorAll(".server-dropdown-item")[selectedIndex]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedIndex = nextServerIndex(selectedIndex, servers.length, -1);
+      dropdown.querySelectorAll(".server-dropdown-item")[selectedIndex]?.focus();
+    } else if (e.key === "Escape") {
+      dropdown.remove();
+    }
+  });
+
+  const rect = elements.statusPill.getBoundingClientRect();
+  dropdown.style.left = `${rect.left}px`;
+  dropdown.style.top = `${rect.bottom + 4}px`;
+  document.body.appendChild(dropdown);
+
+  // Focus first item
+  requestAnimationFrame(() => dropdown.querySelector(".server-dropdown-item")?.focus());
+
+  const close = (e) => {
+    if (!dropdown.contains(e.target) && e.target !== elements.statusPill) {
+      dropdown.remove();
+      document.removeEventListener("click", close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
 }
 
 /* ---------- shortcuts ---------- */
@@ -967,6 +1514,9 @@ async function init() {
     onConnect: () => loadModels().catch(() => {}),
     onLoadModels: (server) => loadModels(server),
     onProfileChange: () => { refreshChips(); applyAppearance(store.get("appearance")); },
+    conversationStore,
+    toast,
+    refreshSidebar,
   });
   initWorkspace({ elements, store });
 
@@ -975,7 +1525,18 @@ async function init() {
   elements.sidebarBackdrop.addEventListener("click", closeSidebar);
   elements.profileChip.addEventListener("click", () => openSettings("profiles"));
   elements.modelChip.addEventListener("click", () => openSettings("profiles"));
-  elements.statusPill.addEventListener("click", () => openSettings("server"));
+  elements.statusPill.addEventListener("click", () => {
+    const conn = store.get("connection");
+    const servers = conn.servers || [];
+    if (shouldShowServerDropdown(servers)) {
+      openServerDropdown(servers, conn.activeServerId);
+    } else {
+      openSettings("server");
+    }
+  });
+  if (elements.ragIndexingIndicator) {
+    elements.ragIndexingIndicator.addEventListener("click", () => openSettings("workspace"));
+  }
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.paletteButton.addEventListener("click", () => openPalette(buildPaletteCommands()));
 
@@ -1002,6 +1563,10 @@ async function init() {
   store.on("workspace.activeSourceId", () => refreshRagPill());
   rag.subscribe((evt) => {
     refreshRagPill();
+    // RAG indexing indicator in topbar
+    if (elements.ragIndexingIndicator) {
+      elements.ragIndexingIndicator.classList.toggle("hidden", !ragIndicatorShouldShow(evt.kind));
+    }
     if (evt.kind === "done") {
       const ocrFiles = evt.result?.ocrNeededFiles || [];
       const ocred = evt.result?.ocredFiles || [];
@@ -1044,6 +1609,29 @@ async function init() {
   setKeymap(store.get("keymap"));
   bindGlobalShortcuts();
   store.on("keymap", () => setKeymap(store.get("keymap")));
+
+  // scroll position cache — save position on scroll with debounce
+  const debouncedSaveScroll = debounce(() => {
+    if (runtime.currentConversation) {
+      scrollCache.set(runtime.currentConversation.id, elements.messages.scrollTop);
+    }
+  }, 150);
+  elements.messages.addEventListener("scroll", debouncedSaveScroll);
+
+  // F key shortcut — open focus modal for hovered message
+  elements.messages.addEventListener("keydown", (e) => {
+    if (e.key !== "f" && e.key !== "F") return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    const target = e.target.closest ? e.target.closest(".msg") : null;
+    if (!target) return;
+    const msgId = target.dataset.id;
+    if (!msgId || !runtime.currentConversation) return;
+    const message = runtime.currentConversation.messages.find((m) => m.id === msgId);
+    if (message) {
+      e.preventDefault();
+      handleMessageAction({ action: "focus", message, messageId: msgId, node: target, body: target.querySelector(".msg-body") });
+    }
+  });
 
   // chips
   refreshChips();

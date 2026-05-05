@@ -1,5 +1,6 @@
 import { toast } from "../toasts.js";
 import { state, section, input, checkbox, button, downloadJson } from "./_shared.js";
+import { templateStore, removeTemplate } from "../../templates.js";
 
 export function panelAdvanced() {
   const { store, elements, onChange, rebuildPanel } = state;
@@ -111,4 +112,54 @@ export function panelAdvanced() {
   ioCard.appendChild(ioRow);
   ioSec.appendChild(ioCard);
   elements.settingsBody.appendChild(ioSec);
+
+  // Templates de conversa
+  const tplSec = section("Templates de conversa");
+  const tplHelp = document.createElement("p");
+  tplHelp.className = "field-help";
+  tplHelp.textContent = "Salve conversas como templates para reutilizar contextos frequentes. Use o menu ⋮ de uma conversa no histórico para salvar.";
+  tplSec.appendChild(tplHelp);
+
+  function renderTemplateList() {
+    const existing = tplSec.querySelector(".tpl-list");
+    if (existing) existing.remove();
+    const list = document.createElement("div");
+    list.className = "tpl-list";
+    const templates = templateStore.list();
+    if (!templates.length) {
+      const empty = document.createElement("p");
+      empty.className = "field-help";
+      empty.textContent = "Nenhum template salvo ainda.";
+      list.appendChild(empty);
+    } else {
+      for (const tpl of templates) {
+        const row = document.createElement("div");
+        row.className = "drawer-card";
+        row.style.flexDirection = "row";
+        row.style.alignItems = "center";
+        row.style.gap = "var(--s-3)";
+        const nameEl = document.createElement("span");
+        nameEl.style.flex = "1";
+        nameEl.style.fontWeight = "500";
+        nameEl.textContent = tpl.name;
+        const msgCount = document.createElement("span");
+        msgCount.className = "field-help";
+        msgCount.style.whiteSpace = "nowrap";
+        msgCount.textContent = `${(tpl.messages || []).length} msg(s)`;
+        const delBtn = button("×", "btn-danger", () => {
+          const updated = removeTemplate(templateStore.list(), tpl.id);
+          templateStore.save(updated);
+          renderTemplateList();
+        });
+        row.appendChild(nameEl);
+        row.appendChild(msgCount);
+        row.appendChild(delBtn);
+        list.appendChild(row);
+      }
+    }
+    tplSec.appendChild(list);
+  }
+
+  renderTemplateList();
+  elements.settingsBody.appendChild(tplSec);
 }

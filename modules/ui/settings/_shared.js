@@ -11,6 +11,9 @@ export const state = {
   onProfileChange: () => {},
   activeTab: "server",
   rebuildPanel: () => {},
+  conversationStore: null,
+  toast: () => {},
+  refreshSidebar: () => {},
 };
 
 export function field(label, child, help) {

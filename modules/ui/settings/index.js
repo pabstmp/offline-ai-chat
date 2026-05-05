@@ -45,6 +45,9 @@ export function initSettings(opts) {
   state.onLoadModels = opts.onLoadModels || (() => {});
   state.onProfileChange = opts.onProfileChange || (() => {});
   state.rebuildPanel = rebuildPanel;
+  if (opts.conversationStore) state.conversationStore = opts.conversationStore;
+  if (opts.toast) state.toast = opts.toast;
+  if (opts.refreshSidebar) state.refreshSidebar = opts.refreshSidebar;
 
   buildTabs();
   rebuildPanel(state.activeTab);
