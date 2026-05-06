@@ -28,7 +28,70 @@ export const DEFAULT_PROFILES = [
     defaultModel: "",
     sampling: { ...defaultSampling(), temperature: 0.4, top_p: 0.9 },
   },
+  {
+    id: "document-analyst",
+    name: "Analista de documentos",
+    icon: "📄",
+    systemPrompt:
+      "Você é um analista de documentos. Responda em português claro e use apenas o contexto fornecido quando houver RAG ou workspace. Extraia fatos, valores, datas, responsáveis e divergências. Se a informação não estiver nos trechos, diga isso claramente. Ao comparar múltiplas fontes, organize a resposta por documento.",
+    defaultModel: "",
+    sampling: { ...defaultSampling(), temperature: 0.3, top_p: 0.9 },
+  },
+  {
+    id: "code-reviewer",
+    name: "Code reviewer",
+    icon: "🔎",
+    systemPrompt:
+      "Você é um revisor de código sênior. Priorize bugs, riscos de segurança, regressões, race conditions, performance e testes ausentes. Não gaste espaço com estilo se não afetar comportamento. Quando possível, cite arquivo, função ou trecho específico e proponha correções objetivas.",
+    defaultModel: "",
+    sampling: { ...defaultSampling(), temperature: 0.25, top_p: 0.9 },
+  },
+  {
+    id: "marketing-manager",
+    name: "Gerente de marketing",
+    icon: "📣",
+    systemPrompt:
+      "Você é um gerente de marketing pragmático. Ajude a definir posicionamento, público-alvo, oferta, mensagens-chave, campanhas, canais, calendário editorial, métricas e próximos passos. Priorize clareza comercial, diferenciação, experimentos simples e recomendações acionáveis.",
+    defaultModel: "",
+    sampling: { ...defaultSampling(), temperature: 0.7, top_p: 0.95 },
+  },
+  {
+    id: "copywriter",
+    name: "Redator",
+    icon: "✍️",
+    systemPrompt:
+      "Você é um redator profissional. Escreva textos claros, naturais e persuasivos em português, ajustando tom, estrutura e nível de detalhe ao objetivo. Ao revisar textos, melhore concisão, fluidez, força da mensagem e ambiguidade sem mudar o sentido.",
+    defaultModel: "",
+    sampling: { ...defaultSampling(), temperature: 0.75, top_p: 0.95 },
+  },
+  {
+    id: "financial-analyst",
+    name: "Analista financeiro",
+    icon: "💹",
+    systemPrompt:
+      "Você é um analista financeiro. Analise valores, receitas, custos, margens, variações, projeções e riscos usando apenas os dados fornecidos quando houver documentos ou tabelas no contexto. Declare premissas, destaque inconsistências e não invente números ausentes.",
+    defaultModel: "",
+    sampling: { ...defaultSampling(), temperature: 0.3, top_p: 0.9 },
+  },
 ];
+
+function cloneDefaultProfile(profile) {
+  return { ...profile, sampling: { ...profile.sampling } };
+}
+
+function ensureDefaultProfiles(target) {
+  if (!Array.isArray(target.profiles)) target.profiles = [];
+  const existing = new Set(target.profiles.map((p) => p?.id).filter(Boolean));
+  for (const profile of DEFAULT_PROFILES) {
+    if (!existing.has(profile.id)) {
+      target.profiles.push(cloneDefaultProfile(profile));
+      existing.add(profile.id);
+    }
+  }
+  if (!target.activeProfileId && target.profiles[0]) {
+    target.activeProfileId = target.profiles[0].id;
+  }
+}
 
 export function defaultSampling() {
   return {
@@ -103,7 +166,7 @@ export function defaults() {
       confirmOnDelete: true,
     },
     activeProfileId: "personal",
-    profiles: DEFAULT_PROFILES.map((p) => ({ ...p, sampling: { ...p.sampling } })),
+    profiles: DEFAULT_PROFILES.map(cloneDefaultProfile),
     keymap: defaultKeymap(),
     advanced: {
       streaming: true,
@@ -203,6 +266,7 @@ export function loadAndMigrate() {
       const parsed = JSON.parse(raw);
       const { ok, data } = validate(parsed);
       const target = ok ? data : { ...defaults(), ...parsed, schemaVersion: SCHEMA_VERSION };
+      ensureDefaultProfiles(target);
       // Soft migrations of sampling.max_tokens to whatever current default
       // covers thinking models without finish_reason=length.
       // - null  → 12000 (very old config, never had a max_tokens)

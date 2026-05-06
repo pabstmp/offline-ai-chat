@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-Referência pra sessões com Claude / agentes de IA. Não é documentação pro usuário final (essa é o `GUIDE.md`).
+Referência pra sessões com Codex / agentes de IA. Não é documentação pro usuário final (essa é o `GUIDE.md`).
 
 ---
 
@@ -316,7 +316,7 @@ Funções que retornam DOM elements. Helpers em `settings.js`: `field()`, `secti
 4. **Mudou contrato de API?** → atualizar `modules/api.js`.
 5. **Mudou estrutura de mensagem?** → atualizar `modules/ui/chat.js:renderMessage` + `finalizeAssistant`.
 6. **Test**: criar `/tmp/test.js` com Playwright. Screenshot final pra confirmar visual.
-7. **Doc**: atualizar `GUIDE.md` (user-facing) e CLAUDE.md (este).
+7. **Doc**: atualizar `GUIDE.md` (user-facing) e AGENTS.md (este).
 
 ---
 

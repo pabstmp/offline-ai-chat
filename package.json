@@ -6,7 +6,12 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "check": "for f in app.js server.js modules/*.js modules/ui/*.js modules/ui/settings/*.js modules/workspace/*.js modules/rag/*.js; do node --check \"$f\" 2>/dev/null && echo \"$f OK\" || echo \"FAIL $f\"; done"
+    "check": "node scripts/check.js",
+    "test": "node tests/feature-improvements.test.js && node tests/security-server.test.js",
+    "lan:setup": "node scripts/setup-lan.js",
+    "lan:up": "docker compose --env-file .env.lan -f docker-compose.lan.yml up -d --build",
+    "lan:down": "docker compose --env-file .env.lan -f docker-compose.lan.yml down",
+    "lan:logs": "docker logs offline-ai-chat-lan --tail 80"
   },
   "keywords": [
     "lm-studio",

@@ -4,6 +4,7 @@ package-lock.json.bak
 
 # Local env / secrets
 .env
+.env.lan
 .env.local
 .env.*.local
 

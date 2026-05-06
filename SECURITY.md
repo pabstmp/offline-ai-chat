@@ -31,10 +31,20 @@ Out-of-scope:
 
 ## Threat model (short)
 
-Offline AI Chat is intended for **single-user, local-network deployments**. It does **not** authenticate requests to its own HTTP server — it assumes that anyone who can reach the bound port (`0.0.0.0:8080` by default) is trusted. If you expose this app to a hostile network, **do not** rely on its current defenses.
+Offline AI Chat is intended for **single-user local use by default** and **controlled LAN deployments when explicitly hardened**.
 
-If you need a multi-user or LAN-shared deployment:
+Native Node binds to `127.0.0.1` by default. When the server is bound to a LAN address (`HOST=0.0.0.0`, `::`, or a non-loopback IP), the server automatically tightens two risky surfaces:
 
-1. Set `WORKSPACE_ROOTS` to a tight whitelist (read-only mounts).
-2. Put the app behind a reverse proxy with authentication (Caddy, Cloudflare Tunnel, Tailscale, etc.).
-3. Bind to `127.0.0.1` and tunnel through the auth layer instead of exposing `0.0.0.0`.
+1. `/api/fs/*` requires `WORKSPACE_ROOTS`; unrestricted filesystem roots are blocked unless `ALLOW_UNRESTRICTED_WORKSPACE=true` is explicitly set.
+2. The LM Studio proxy allows loopback only unless `ALLOWED_LM_HOSTS` is configured.
+
+For a company or LAN-shared deployment:
+
+1. Prefer the assisted flow: `npm run lan:setup` then `npm run lan:up`.
+2. Set `APP_AUTH_PASSWORD` or `APP_AUTH_TOKEN` to enable built-in Basic Auth.
+3. Set `WORKSPACE_ROOTS` to a tight whitelist and mount those folders read-only.
+4. Set `ALLOWED_LM_HOSTS` to the exact LM Studio hosts/ports the proxy may reach.
+5. Put the app behind your normal reverse proxy/VPN/SSO layer when possible.
+6. Avoid mounting a full workstation drive in shared deployments.
+
+Do not expose an unauthenticated instance to a hostile network.

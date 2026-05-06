@@ -72,6 +72,26 @@ Pra parar: `docker compose down`.
 
 Diferença prática: Docker isola o filesystem (não enxerga sua pasta do Windows direto). Pra usar Workspace com Docker, precisa montar volume no `docker-compose.yml`. Pra simplicidade, native é melhor.
 
+### Publicar em LAN / servidor da companhia
+
+Para uso compartilhado, use o modo assistido. Ele pergunta URL do LM Studio, pasta compartilhada, porta e senha, e gera `.env.lan` automaticamente:
+
+```powershell
+npm run lan:setup
+npm run lan:up
+npm run lan:logs
+```
+
+Depois abra `http://IP_DO_SERVIDOR:8080`, faca login com a senha mostrada pelo wizard e configure **Configuracoes -> Servidor** com a URL do LM Studio indicada no final.
+
+Regras importantes:
+- Sem `APP_AUTH_PASSWORD`/`APP_AUTH_TOKEN`, qualquer pessoa que alcance a porta consegue abrir o app.
+- Sem `WORKSPACE_ROOTS`, endpoints `/api/fs/*` ficam bloqueados quando `HOST` expoe LAN.
+- Sem `ALLOWED_LM_HOSTS`, o proxy em LAN so fala com `localhost`/loopback.
+- Em companhia, prefira colocar atras de reverse proxy/VPN/SSO e montar so pastas necessarias em modo read-only.
+
+Modo manual tambem existe: copie `.env.lan.example` para `.env.lan`, edite os campos e rode `npm run lan:up`.
+
 ### Pré-requisitos do LM Studio
 
 1. Abrir o LM Studio na máquina servidor (pode ser a mesma)
@@ -297,7 +317,17 @@ Pergunta antes de deletar conversa, mensagem, perfil ou servidor.
 
 ## 9. Aba: Perfis
 
-Perfis são presets completos: system prompt + modelo padrão + sampling. Útil pra alternar entre usos (ex: assistente geral, code reviewer, escritor criativo).
+Perfis são presets completos: system prompt + modelo padrão + sampling. Útil pra alternar entre usos (ex: assistente geral, documentos, marketing, financeiro, code reviewer).
+
+### Perfis padrão
+
+- **Assistente pessoal**: uso geral, respostas diretas e organização de ideias.
+- **Developer full-stack**: implementação, arquitetura, debugging e tradeoffs técnicos.
+- **Analista de documentos**: leitura de PDFs, RAG, comparação de fontes e extração de fatos.
+- **Code reviewer**: revisão crítica de bugs, segurança, regressões e testes ausentes.
+- **Gerente de marketing**: posicionamento, campanhas, público-alvo, canais e métricas.
+- **Redator**: textos claros, naturais e persuasivos em português.
+- **Analista financeiro**: receitas, custos, margens, variações, projeções e riscos.
 
 ### Card de perfil
 
@@ -332,11 +362,11 @@ Carrega um perfil exportado. Útil pra compartilhar configurações entre máqui
 **Code reviewer:**
 > Você é um revisor de código sênior. Foque em: bugs, race conditions, segurança, performance e legibilidade. Cite linhas específicas. Não sugira melhorias estéticas se a lógica está correta. Responda em português.
 
-**Tradutor técnico:**
-> Você traduz inglês ↔ português técnico. Mantenha jargões originais quando não há equivalente claro. Não parafraseie — traduza preservando o sentido literal. Quando ambíguo, ofereça duas opções.
+**Gerente de marketing:**
+> Voc? ? um gerente de marketing pragm?tico. Ajude a definir posicionamento, p?blico-alvo, oferta, mensagens-chave, campanhas, canais, calend?rio editorial, m?tricas e pr?ximos passos.
 
-**Resumidor:**
-> Você resume textos longos em 3 bullets curtos. Sem prefácio, sem conclusão. Cada bullet tem no máximo 15 palavras.
+**Analista financeiro:**
+> Voc? ? um analista financeiro. Analise valores, receitas, custos, margens, varia??es, proje??es e riscos usando apenas os dados fornecidos quando houver documentos ou tabelas no contexto.
 
 ---
 
@@ -633,9 +663,9 @@ Shift+Enter   Nova linha
 6. Mesma rede (se servidor em outra máquina)?
 7. LM Studio configurado pra aceitar conexões externas, não só localhost?
 
-### Workspace: "WORKSPACE_ROOTS não configurado" (versão antiga)
+### Workspace: "WORKSPACE_ROOTS obrigatorio" / 403
 
-Atualiza pra última versão do server.js. Agora o servidor aceita qualquer pasta em modo single-user (sem env var).
+Se o servidor esta exposto em LAN (`HOST=0.0.0.0`, `::` ou IP nao-loopback), configure `WORKSPACE_ROOTS` com as pastas permitidas. Em modo local (`127.0.0.1`), o servidor continua aceitando qualquer pasta conectada pela UI.
 
 ### Workspace: "relPath inválido" / 403
 
@@ -720,9 +750,35 @@ Tudo local em localStorage/IndexedDB.
 
 Se o seu LM Studio tem auth, a key fica em localStorage. Limpa via Configurações → Comportamento → "Limpar todo o storage".
 
+### Autenticacao do app
+
+Para LAN, configure `APP_AUTH_PASSWORD` ou `APP_AUTH_TOKEN`. Isso ativa HTTP Basic Auth antes de servir a UI e antes de qualquer `/api/*`.
+
+Fluxo recomendado com Docker:
+
+```powershell
+npm run lan:setup
+npm run lan:up
+```
+
+Exemplo manual para Node nativo:
+
+```powershell
+$env:HOST="0.0.0.0"
+$env:APP_AUTH_USER="offline-ai"
+$env:APP_AUTH_PASSWORD="senha-longa-aqui"
+$env:WORKSPACE_ROOTS="C:\Projetos\base-rag"
+$env:ALLOWED_LM_HOSTS="localhost,192.168.1.50:1234"
+node server.js
+```
+
+Em ambiente corporativo, use tambem reverse proxy/VPN/SSO. A auth embutida e uma camada simples para LAN, nao substitui controle de acesso corporativo completo.
+
 ### Path traversal
 
-Workspace bloqueia `relPath` com `..`, paths absolutos no `relPath`, e qualquer escape do `sourceRoot`. Validação em `server.js:resolveSafePath`.
+Workspace bloqueia `relPath` com `..`, paths absolutos no `relPath`, escape do `sourceRoot` e symlink que aponte para fora. Validação em `server.js:resolveSafePath`.
+
+Quando `HOST` expoe LAN e `WORKSPACE_ROOTS` esta vazio, `/api/fs/*` fica bloqueado. Isso evita publicar leitura arbitraria de disco por acidente.
 
 ### Permissões do OS
 
@@ -814,10 +870,16 @@ localStorage["offline-ai-chat:conversations:v1"] = [
 
 | Var | Default | Descrição |
 |---|---|---|
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` native, `0.0.0.0` Docker | Bind address |
 | `PORT` | `8080` | Porta HTTP |
-| `WORKSPACE_ROOTS` | _(vazio)_ | CSV de paths permitidos. Vazio = single-user, aceita qualquer pasta |
+| `APP_AUTH_USER` | `offline-ai` | Usuario da auth Basic embutida |
+| `APP_AUTH_PASSWORD` / `APP_AUTH_TOKEN` | _(vazio)_ | Liga auth Basic quando definido |
+| `ALLOW_UNRESTRICTED_WORKSPACE` | auto | Override explicito para aceitar qualquer pasta mesmo em LAN |
+| `ALLOWED_LM_HOSTS` | _(vazio)_ | Allowlist de hosts LM Studio. Vazio em LAN permite so loopback |
+| `WORKSPACE_ROOTS` | _(vazio)_ | CSV de paths permitidos. Vazio = single-user local; bloqueado em LAN |
 | `MAX_FILE_BYTES` | `262144` (256 KB) | Tamanho máximo de arquivo lido |
+| `MAX_PDF_BYTES` | `33554432` (32 MB) | Tamanho maximo de PDF extraido |
+| `MAX_BODY_BYTES` | `~1.4x MAX_PDF_BYTES` | Limite de body JSON para upload PDF em base64 |
 
 ---
 

@@ -4,11 +4,21 @@ services:
       context: .
     container_name: offline-ai-chat
     environment:
+      # Container precisa escutar em 0.0.0.0 internamente para o port mapping funcionar.
+      # O bind externo abaixo limita o acesso ao localhost do host por padrão.
       HOST: 0.0.0.0
       PORT: 8080
-      # WORKSPACE_ROOTS: optional whitelist (CSV). Empty = single-user mode (qualquer pasta).
+      # Default dev/local: permitido porque a porta está bindada só em 127.0.0.1.
+      # Para LAN/companhia: remova esta linha e defina WORKSPACE_ROOTS + auth.
+      ALLOW_UNRESTRICTED_WORKSPACE: "true"
+      ALLOWED_LM_HOSTS: "localhost,127.0.0.1:1234,host.docker.internal:1234"
+      # APP_AUTH_USER: offline-ai
+      # APP_AUTH_PASSWORD: change-me
+      # Para LM Studio em outra maquina, adicione o host:porta aqui:
+      # ALLOWED_LM_HOSTS: localhost,host.docker.internal:1234,192.168.1.50:1234
+      # WORKSPACE_ROOTS: /workspace
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     # Bind mount the host filesystem read-only so server.js can read files
     # from the host. The server auto-translates Windows-style paths
     # (C:\Users\foo) into /host/c/Users/foo when running in container.

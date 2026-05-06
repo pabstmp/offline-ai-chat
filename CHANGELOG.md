@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Built-in optional Basic Auth via `APP_AUTH_PASSWORD` / `APP_AUTH_TOKEN`.
+- Assisted LAN mode via `npm run lan:setup`, `.env.lan`, and `docker-compose.lan.yml`.
+- LAN hardening for filesystem and LM Studio proxy: `WORKSPACE_ROOTS` is required when bound to LAN, and `ALLOWED_LM_HOSTS` limits upstream LM Studio targets.
+- Additional default profiles: document analyst, code reviewer, marketing manager, writer, and financial analyst.
+- Server hardening tests in `tests/security-server.test.js`.
+- Cross-platform `npm run check` script.
+
+### Changed
+
+- Native server now defaults to `HOST=127.0.0.1`; Docker Compose publishes `127.0.0.1:8080` for local dev.
+- Static file serving now uses an allowlist and blocks repo internals/dotfiles.
+- PDF/body limits now respect `MAX_PDF_BYTES` and `MAX_BODY_BYTES`.
+- Security and deployment documentation updated for company/LAN use.
+
 ## [2.0.0] — 2026-05-03
 
 First public release.

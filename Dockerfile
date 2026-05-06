@@ -17,11 +17,14 @@ RUN mkdir -p /app/.cache/tesseract
 # Copy app
 COPY app.js index.html server.js sw.js styles.css manifest.webmanifest README.md GUIDE.md ./
 COPY modules ./modules
+COPY assets ./assets
 
+# Containers usually need 0.0.0.0 internally; restrict the external bind in
+# docker-compose.yml or at the reverse proxy.
 ENV HOST=0.0.0.0
 ENV PORT=8080
 ENV OCR_CACHE_DIR=/app/.cache/tesseract
-# Optional: set WORKSPACE_ROOTS to enable /api/fs/* endpoints (comma-separated)
+# LAN/company deploy: set auth + WORKSPACE_ROOTS + ALLOWED_LM_HOSTS.
 # ENV WORKSPACE_ROOTS=/workspace
 
 EXPOSE 8080

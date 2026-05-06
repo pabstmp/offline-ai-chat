@@ -12,31 +12,42 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
 
-const HOST = process.env.HOST || "0.0.0.0";
+const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = __dirname;
-const MAX_BODY_BYTES = 1024 * 1024 * 8;
-const MAX_PDF_BYTES = 1024 * 1024 * 32; // 32 MB
-const MAX_FILE_BYTES = Number(process.env.MAX_FILE_BYTES || 256 * 1024);
+const MAX_PDF_BYTES = readPositiveIntEnv("MAX_PDF_BYTES", 1024 * 1024 * 32); // 32 MB
+const MAX_BODY_BYTES = readPositiveIntEnv(
+  "MAX_BODY_BYTES",
+  Math.max(1024 * 1024 * 8, Math.ceil(MAX_PDF_BYTES * 1.4))
+);
+const MAX_FILE_BYTES = readPositiveIntEnv("MAX_FILE_BYTES", 256 * 1024);
 const MAX_LIST_ENTRIES = 1000;
 const RATE_LIMIT_WINDOW_MS = 10_000;
 const RATE_LIMIT_MAX = 60;
+const LAN_BIND = isNetworkExposedHost(HOST);
+const ALLOW_UNRESTRICTED_WORKSPACE = readBoolEnv("ALLOW_UNRESTRICTED_WORKSPACE", !LAN_BIND);
+const APP_AUTH_USER = process.env.APP_AUTH_USER || "offline-ai";
+const APP_AUTH_PASSWORD = process.env.APP_AUTH_PASSWORD || process.env.APP_AUTH_TOKEN || "";
+const AUTH_ENABLED = APP_AUTH_PASSWORD.length > 0;
+const ALLOWED_LM_HOSTS = parseCsvEnv("ALLOWED_LM_HOSTS").map((s) => s.toLowerCase());
 
-const WORKSPACE_ROOTS = (process.env.WORKSPACE_ROOTS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map((p) => path.resolve(p));
+const WORKSPACE_ROOTS = parseCsvEnv("WORKSPACE_ROOTS");
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
+  ".gif": "image/gif",
   ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
   ".js": "text/javascript; charset=utf-8",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
   ".json": "application/json; charset=utf-8",
   ".md": "text/markdown; charset=utf-8",
+  ".png": "image/png",
   ".svg": "image/svg+xml; charset=utf-8",
   ".txt": "text/plain; charset=utf-8",
   ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".webp": "image/webp",
 };
 
 const TEXT_EXTENSIONS = new Set([
@@ -59,17 +70,129 @@ const NEVER_CACHE_PATHS = new Set([
   "/sw.js",
 ]);
 
+const STATIC_ALLOW_FILES = new Set([
+  "/",
+  "/index.html",
+  "/styles.css",
+  "/app.js",
+  "/sw.js",
+  "/manifest.webmanifest",
+]);
+
+const STATIC_ASSET_EXTENSIONS = new Set([
+  ".gif", ".ico", ".jpg", ".jpeg", ".png", ".svg", ".webp",
+]);
+
+const SECURITY_HEADERS = {
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "script-src 'self' 'unsafe-inline'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "connect-src 'self'",
+    "worker-src 'self'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join("; "),
+  "Cross-Origin-Opener-Policy": "same-origin",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+};
+
 /* ---------- helpers ---------- */
+
+function readPositiveIntEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function readBoolEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw == null || raw === "") return fallback;
+  if (/^(1|true|yes|on)$/i.test(raw)) return true;
+  if (/^(0|false|no|off)$/i.test(raw)) return false;
+  return fallback;
+}
+
+function parseCsvEnv(name) {
+  return (process.env[name] || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function isNetworkExposedHost(host) {
+  const h = String(host || "").trim().toLowerCase();
+  return !["127.0.0.1", "localhost", "::1", "[::1]"].includes(h);
+}
+
+function withSecurityHeaders(headers = {}) {
+  return { ...SECURITY_HEADERS, ...headers };
+}
 
 function sendJson(response, statusCode, payload, extraHeaders = {}) {
   const body = JSON.stringify(payload);
-  response.writeHead(statusCode, {
+  response.writeHead(statusCode, withSecurityHeaders({
     "Cache-Control": "no-store",
     "Content-Length": Buffer.byteLength(body),
     "Content-Type": "application/json; charset=utf-8",
     ...extraHeaders,
-  });
+  }));
   response.end(body);
+}
+
+function sendUnauthorized(response) {
+  const body = "Authentication required";
+  response.writeHead(401, withSecurityHeaders({
+    "Cache-Control": "no-store",
+    "Content-Length": Buffer.byteLength(body),
+    "Content-Type": "text/plain; charset=utf-8",
+    "WWW-Authenticate": 'Basic realm="Offline AI Chat", charset="UTF-8"',
+  }));
+  response.end(body);
+}
+
+function timingSafeStringEqual(a, b) {
+  const ah = crypto.createHash("sha256").update(String(a)).digest();
+  const bh = crypto.createHash("sha256").update(String(b)).digest();
+  return crypto.timingSafeEqual(ah, bh);
+}
+
+function isAuthenticated(request) {
+  if (!AUTH_ENABLED) return true;
+  const raw = request.headers.authorization || "";
+  if (!raw.startsWith("Basic ")) return false;
+  try {
+    const decoded = Buffer.from(raw.slice(6), "base64").toString("utf8");
+    const sep = decoded.indexOf(":");
+    if (sep < 0) return false;
+    const user = decoded.slice(0, sep);
+    const password = decoded.slice(sep + 1);
+    return (
+      timingSafeStringEqual(user, APP_AUTH_USER) &&
+      timingSafeStringEqual(password, APP_AUTH_PASSWORD)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isSameOriginRequestAllowed(request) {
+  const origin = request.headers.origin;
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    const host = String(request.headers["x-forwarded-host"] || request.headers.host || "")
+      .split(",")[0]
+      .trim();
+    return !!host && originUrl.host === host;
+  } catch {
+    return false;
+  }
 }
 
 function readBody(request) {
@@ -101,10 +224,28 @@ function normalizeBaseUrl(value) {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("baseUrl deve usar http ou https.");
   }
+  if (!isAllowedProxyTarget(url)) {
+    throw new Error("baseUrl nao autorizado. Configure ALLOWED_LM_HOSTS para liberar este host.");
+  }
   url.search = "";
   url.hash = "";
   url.pathname = url.pathname.replace(/\/+$/, "") || "/v1";
   return url;
+}
+
+function isLoopbackHostname(hostname) {
+  const h = String(hostname || "").toLowerCase();
+  return h === "localhost" || h === "::1" || h === "0:0:0:0:0:0:0:1" || /^127\./.test(h);
+}
+
+function isAllowedProxyTarget(url) {
+  if (ALLOWED_LM_HOSTS.length) {
+    const hostname = url.hostname.toLowerCase();
+    const host = url.host.toLowerCase();
+    return ALLOWED_LM_HOSTS.some((allowed) => allowed === hostname || allowed === host);
+  }
+  if (LAN_BIND) return isLoopbackHostname(url.hostname);
+  return true;
 }
 
 /* ---------- proxy to LM Studio ---------- */
@@ -127,10 +268,10 @@ function proxyRequestRaw({ apiKey, baseUrl, body, method, response, absolutePath
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const upstream = client.request(target, { headers, method }, (upstreamResponse) => {
-    response.writeHead(upstreamResponse.statusCode || 502, {
+    response.writeHead(upstreamResponse.statusCode || 502, withSecurityHeaders({
       "Cache-Control": "no-store",
       "Content-Type": upstreamResponse.headers["content-type"] || "application/json; charset=utf-8",
-    });
+    }));
     upstreamResponse.pipe(response);
   });
 
@@ -173,19 +314,19 @@ function proxyRequest({ apiKey, baseUrl, body, method, response, upstreamPath })
       upstreamResponse.on("end", () => {
         const bodyStr = Buffer.concat(chunks).toString("utf8").slice(0, 1000);
         console.warn(`[proxy] ${method} ${target.pathname} ${status} ${elapsed}ms ${ctx} :: ${bodyStr}`);
-        response.writeHead(status, {
+        response.writeHead(status, withSecurityHeaders({
           "Cache-Control": "no-store",
           "Content-Type": upstreamResponse.headers["content-type"] || "application/json; charset=utf-8",
-        });
+        }));
         response.end(bodyStr);
       });
       return;
     }
     console.log(`[proxy] ${method} ${target.pathname} ${status} ${elapsed}ms ${ctx}`);
-    response.writeHead(status, {
+    response.writeHead(status, withSecurityHeaders({
       "Cache-Control": "no-store",
       "Content-Type": upstreamResponse.headers["content-type"] || "application/json; charset=utf-8",
-    });
+    }));
     upstreamResponse.pipe(response);
   });
 
@@ -206,6 +347,11 @@ function proxyRequest({ apiKey, baseUrl, body, method, response, upstreamPath })
 async function handleApi(request, response, pathname) {
   if (request.method !== "POST") {
     sendJson(response, 405, { error: { message: "Método não permitido." } });
+    return;
+  }
+  const contentType = String(request.headers["content-type"] || "").toLowerCase();
+  if (!contentType.includes("application/json")) {
+    sendJson(response, 415, { error: { message: "Content-Type deve ser application/json." } });
     return;
   }
 
@@ -320,6 +466,27 @@ function translateWindowsPath(p) {
   return p;
 }
 
+let allowedWorkspaceRootsCache = null;
+
+function realpathIfExists(p) {
+  try { return fs.realpathSync.native(p); }
+  catch { return null; }
+}
+
+function getAllowedWorkspaceRoots() {
+  if (allowedWorkspaceRootsCache) return allowedWorkspaceRootsCache;
+  allowedWorkspaceRootsCache = WORKSPACE_ROOTS.map((raw) => {
+    const translated = translateWindowsPath(raw);
+    const resolved = path.resolve(translated);
+    return realpathIfExists(resolved) || resolved;
+  });
+  return allowedWorkspaceRootsCache;
+}
+
+function isInsideRoot(candidate, root) {
+  return candidate === root || candidate.startsWith(root + path.sep);
+}
+
 function resolveSafePath(sourceRoot, relPath) {
   if (typeof sourceRoot !== "string" || typeof relPath !== "string") {
     throw new Error("sourceRoot e relPath são obrigatórios.");
@@ -328,8 +495,14 @@ function resolveSafePath(sourceRoot, relPath) {
   const translated = translateWindowsPath(sourceRoot);
   const isWindowsPath = /^[A-Za-z]:[\\/]/.test(sourceRoot);
   const root = path.resolve(translated);
+  const realRoot = realpathIfExists(root) || root;
 
-  if (WORKSPACE_ROOTS.length && !WORKSPACE_ROOTS.some((r) => root === r || root.startsWith(r + path.sep))) {
+  if (!WORKSPACE_ROOTS.length && !ALLOW_UNRESTRICTED_WORKSPACE) {
+    throw new Error("WORKSPACE_ROOTS e obrigatorio quando o servidor esta exposto em LAN.");
+  }
+
+  const allowedRoots = getAllowedWorkspaceRoots();
+  if (allowedRoots.length && !allowedRoots.some((r) => isInsideRoot(realRoot, r))) {
     throw new Error("sourceRoot não está autorizado em WORKSPACE_ROOTS.");
   }
 
@@ -349,10 +522,14 @@ function resolveSafePath(sourceRoot, relPath) {
     throw new Error("relPath inválido.");
   }
   const absolute = path.resolve(root, normalizedRel);
-  if (absolute !== root && !absolute.startsWith(root + path.sep)) {
+  if (!isInsideRoot(absolute, root)) {
     throw new Error("Acesso fora do sourceRoot bloqueado.");
   }
-  return { root, absolute };
+  const realAbsolute = realpathIfExists(absolute);
+  if (realAbsolute && !isInsideRoot(realAbsolute, realRoot)) {
+    throw new Error("Acesso por symlink fora do sourceRoot bloqueado.");
+  }
+  return { root: realRoot, absolute: realAbsolute || absolute };
 }
 
 async function isProbablyBinary(absolute) {
@@ -807,14 +984,38 @@ function makeEtag(stat) {
 function cacheControlFor(pathname) {
   if (NEVER_CACHE_PATHS.has(pathname)) return "no-cache";
   if (pathname.endsWith(".webmanifest")) return "no-cache";
-  return "public, max-age=31536000, immutable";
+  if (pathname.endsWith(".js") || pathname.endsWith(".css")) return "no-cache";
+  if (pathname.startsWith("/assets/")) return "public, max-age=31536000, immutable";
+  return "no-cache";
+}
+
+function isStaticPathAllowed(pathname) {
+  if (!pathname || pathname.includes("\0") || pathname.includes("\\")) return false;
+  if (STATIC_ALLOW_FILES.has(pathname)) return true;
+  const ext = path.extname(pathname).toLowerCase();
+  if (pathname.startsWith("/modules/")) return ext === ".js";
+  if (pathname.startsWith("/assets/")) return STATIC_ASSET_EXTENSIONS.has(ext);
+  return false;
+}
+
+function hasHiddenPathSegment(relativePath) {
+  return relativePath.split(/[\\/]+/).some((part) => part.startsWith("."));
 }
 
 function serveStatic(request, response, pathname) {
+  if (request.method !== "GET" && request.method !== "HEAD") {
+    sendJson(response, 405, { error: { message: "Método não permitido." } });
+    return;
+  }
+  if (!isStaticPathAllowed(pathname)) {
+    sendJson(response, 404, { error: { message: "Arquivo não encontrado." } });
+    return;
+  }
   const relativePath = pathname === "/" ? "index.html" : pathname.slice(1);
   const filePath = path.resolve(ROOT, relativePath);
+  const rootRelative = path.relative(ROOT, filePath);
 
-  if (!filePath.startsWith(ROOT)) {
+  if (rootRelative.startsWith("..") || path.isAbsolute(rootRelative) || hasHiddenPathSegment(rootRelative)) {
     sendJson(response, 403, { error: { message: "Acesso negado." } });
     return;
   }
@@ -828,17 +1029,21 @@ function serveStatic(request, response, pathname) {
     const etag = makeEtag(stat);
     const ifNoneMatch = request.headers["if-none-match"];
     if (ifNoneMatch && ifNoneMatch === etag) {
-      response.writeHead(304, { ETag: etag, "Cache-Control": cacheControlFor(pathname) });
+      response.writeHead(304, withSecurityHeaders({ ETag: etag, "Cache-Control": cacheControlFor(pathname) }));
       response.end();
       return;
     }
 
-    response.writeHead(200, {
+    response.writeHead(200, withSecurityHeaders({
       "Cache-Control": cacheControlFor(pathname),
       "Content-Length": stat.size,
       "Content-Type": MIME_TYPES[path.extname(filePath)] || "application/octet-stream",
       ETag: etag,
-    });
+    }));
+    if (request.method === "HEAD") {
+      response.end();
+      return;
+    }
     fs.createReadStream(filePath).pipe(response);
   });
 }
@@ -846,8 +1051,25 @@ function serveStatic(request, response, pathname) {
 /* ---------- server ---------- */
 
 const server = http.createServer((request, response) => {
-  const url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
-  const pathname = decodeURIComponent(url.pathname);
+  let url;
+  let pathname;
+  try {
+    url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    sendJson(response, 400, { error: { message: "URL inválida." } });
+    return;
+  }
+
+  if (!isAuthenticated(request)) {
+    sendUnauthorized(response);
+    return;
+  }
+
+  if (pathname.startsWith("/api/") && !isSameOriginRequestAllowed(request)) {
+    sendJson(response, 403, { error: { message: "Origin não autorizado." } });
+    return;
+  }
 
   if (pathname.startsWith("/api/")) { handleApi(request, response, pathname); return; }
   serveStatic(request, response, pathname);
@@ -858,11 +1080,56 @@ server.on("error", (error) => {
   process.exitCode = 1;
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Offline AI Chat: http://localhost:${PORT}`);
-  if (WORKSPACE_ROOTS.length) {
-    console.log(`Workspace: whitelist ativa — ${WORKSPACE_ROOTS.join(", ")}`);
-  } else {
-    console.log("Workspace: modo local single-user (qualquer pasta conectada pela UI é aceita)");
-  }
-});
+function startServer() {
+  server.listen(PORT, HOST, () => {
+    const visibleHost = HOST === "0.0.0.0" ? "localhost" : HOST;
+    console.log(`Offline AI Chat: http://${visibleHost}:${PORT}`);
+    console.log(`Bind: ${HOST}:${PORT}${LAN_BIND ? " (LAN)" : " (local)"}`);
+    console.log(`Auth: ${AUTH_ENABLED ? `Basic habilitado (usuario "${APP_AUTH_USER}")` : "desabilitado"}`);
+    if (LAN_BIND && !AUTH_ENABLED) {
+      console.warn("AVISO: servidor exposto em LAN sem APP_AUTH_PASSWORD/APP_AUTH_TOKEN.");
+    }
+    if (ALLOWED_LM_HOSTS.length) {
+      console.log(`LM hosts permitidos: ${ALLOWED_LM_HOSTS.join(", ")}`);
+    } else if (LAN_BIND) {
+      console.log("LM hosts permitidos: apenas loopback (configure ALLOWED_LM_HOSTS para liberar outros).");
+    } else {
+      console.log("LM hosts permitidos: qualquer host (modo local).");
+    }
+    if (WORKSPACE_ROOTS.length) {
+      console.log(`Workspace: whitelist ativa - ${WORKSPACE_ROOTS.join(", ")}`);
+    } else if (ALLOW_UNRESTRICTED_WORKSPACE) {
+      console.log("Workspace: modo local single-user (qualquer pasta conectada pela UI e aceita)");
+    } else {
+      console.log("Workspace: bloqueado ate configurar WORKSPACE_ROOTS (seguro para LAN)");
+    }
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  server,
+  startServer,
+  normalizeBaseUrl,
+  resolveSafePath,
+  isAuthenticated,
+  isSameOriginRequestAllowed,
+  isStaticPathAllowed,
+  isAllowedProxyTarget,
+  config: {
+    HOST,
+    PORT,
+    LAN_BIND,
+    AUTH_ENABLED,
+    APP_AUTH_USER,
+    ALLOWED_LM_HOSTS,
+    WORKSPACE_ROOTS,
+    ALLOW_UNRESTRICTED_WORKSPACE,
+    MAX_BODY_BYTES,
+    MAX_FILE_BYTES,
+    MAX_PDF_BYTES,
+  },
+};

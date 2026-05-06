@@ -1,0 +1,30 @@
+services:
+  offline-ai-chat:
+    build:
+      context: .
+    container_name: offline-ai-chat-lan
+    environment:
+      # Internal container bind. External exposure is controlled by ports below.
+      HOST: 0.0.0.0
+      PORT: 8080
+
+      # LAN hardening. Generate these with: npm run lan:setup
+      APP_AUTH_USER: ${APP_AUTH_USER:-offline-ai}
+      APP_AUTH_PASSWORD: ${APP_AUTH_PASSWORD:?Run npm run lan:setup or set APP_AUTH_PASSWORD in .env.lan}
+      WORKSPACE_ROOTS: /workspace
+      ALLOWED_LM_HOSTS: ${ALLOWED_LM_HOSTS:?Run npm run lan:setup or set ALLOWED_LM_HOSTS in .env.lan}
+
+      OCR_LANGS: ${OCR_LANGS:-por+eng}
+      OCR_CACHE_DIR: /app/.cache/tesseract
+      MAX_FILE_BYTES: ${MAX_FILE_BYTES:-262144}
+      MAX_PDF_BYTES: ${MAX_PDF_BYTES:-33554432}
+    ports:
+      - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8080}:8080"
+    volumes:
+      # Mount exactly one shared workspace read-only.
+      - "${LAN_WORKSPACE_HOST_PATH:?Run npm run lan:setup or set LAN_WORKSPACE_HOST_PATH in .env.lan}:/workspace:ro"
+      - tesseract-cache-lan:/app/.cache/tesseract
+    restart: unless-stopped
+
+volumes:
+  tesseract-cache-lan:

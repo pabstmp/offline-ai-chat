@@ -19,10 +19,11 @@ For OCR work specifically, the first run downloads ~17 MB of language packs from
 ## Validate before submitting
 
 ```bash
-npm run check     # node --check on every JS file
+npm run check     # syntax check on server + browser modules (Windows/Linux)
+npm test          # unit/PBT + server hardening tests
 ```
 
-There's no formal test suite. Smoke tests live as ad-hoc scripts in `/tmp/` using Playwright (see [`CLAUDE.md`](./CLAUDE.md) → Testes).
+Visual smoke tests still live as ad-hoc scripts in `/tmp/` using Playwright when needed (see [`CLAUDE.md`](./CLAUDE.md) → Testes).
 
 ## Style
 

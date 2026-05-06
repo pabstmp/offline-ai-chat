@@ -54,11 +54,14 @@ docker compose up -d --build
 
 Open <http://localhost:8080>.
 
+The default Compose file publishes the app on `127.0.0.1:8080` only. That is intentional: LAN/company exposure needs authentication and filesystem whitelists.
+
 ### First-run setup
 
 1. **Settings → Servidor**: point to your LM Studio.
-   - Same machine: `http://localhost:1234/v1` (default).
-   - LAN: `http://192.168.1.x:1234/v1` (replace `x`).
+   - Native same machine: `http://localhost:1234/v1` (default).
+   - Docker with LM Studio on the host: `http://host.docker.internal:1234/v1` (allowed by the default Compose file).
+   - LAN: `http://192.168.1.x:1234/v1` (replace `x`; add it to `ALLOWED_LM_HOSTS` if this app is LAN-exposed).
    - Ensure LM Studio is allowing connections from the network and the port is open in your firewall.
 2. **Settings → Perfis & Inferência**: pick a chat model from the dropdown.
 3. **(Optional) Settings → Workspace**: connect a folder, click **Indexar com RAG**, ask grounded questions.
@@ -74,6 +77,22 @@ node server.js
 
 ---
 
+### LAN / company server
+
+Use the assisted LAN flow. It asks for the LM Studio URL, shared workspace folder, app port, and login password, then writes `.env.lan` for you:
+
+```bash
+npm run lan:setup
+npm run lan:up
+npm run lan:logs
+```
+
+Then open `http://SERVER_IP:8080`, log in with the generated credentials, and set **Settings -> Servidor** to the LM Studio URL shown by the wizard.
+
+Manual mode is still available with [`.env.lan.example`](./.env.lan.example) + [`docker-compose.lan.yml`](./docker-compose.lan.yml). For company use, keep the app behind your normal VPN/reverse proxy/SSO when possible.
+
+---
+
 ## Configuration
 
 All settings persist in `localStorage` (schema versioned). Soft migrations run on app boot — old configs are automatically upgraded when defaults improve (e.g. `max_tokens 4096 → 12000` for thinking models).
@@ -84,15 +103,22 @@ See [`.env.example`](./.env.example). The most useful:
 
 | Var | Default | Purpose |
 |---|---|---|
-| `HOST` | `0.0.0.0` | Bind address |
+| `HOST` | `127.0.0.1` native, `0.0.0.0` in Docker | Bind address |
 | `PORT` | `8080` | HTTP port |
-| `WORKSPACE_ROOTS` | _(empty)_ | CSV of allowed absolute paths. Empty = single-user mode |
+| `APP_AUTH_USER` | `offline-ai` | Username for built-in HTTP Basic auth |
+| `APP_AUTH_PASSWORD` / `APP_AUTH_TOKEN` | _(empty)_ | Enables built-in auth when set |
+| `WORKSPACE_ROOTS` | _(empty)_ | CSV of allowed absolute paths. Empty = local single-user only; blocked when exposed on LAN |
+| `ALLOW_UNRESTRICTED_WORKSPACE` | auto | Explicit override for unrestricted filesystem mode |
+| `ALLOWED_LM_HOSTS` | _(empty)_ | LM Studio proxy allowlist. Empty on LAN allows loopback only |
+| `MAX_FILE_BYTES` | `262144` | Max text file read via `/api/fs/read` |
+| `MAX_PDF_BYTES` | `33554432` | Max PDF size for extraction |
+| `MAX_BODY_BYTES` | `~1.4x MAX_PDF_BYTES` | Max JSON request body, sized for base64 PDF uploads |
 | `OCR_LANGS` | `por+eng` | Tesseract languages (e.g. `eng`, `por+eng+spa`) |
 | `OCR_CACHE_DIR` | `/app/.cache/tesseract` | Where trained data files are cached |
 
 ### Workspace whitelist (multi-user / LAN deploy)
 
-By default, single-user mode lets you connect any folder via the UI. To restrict access in shared deployments:
+Native local mode lets you connect any folder via the UI. When the server is bound to LAN (`HOST=0.0.0.0`, `::`, or another non-loopback address), `/api/fs/*` is blocked until `WORKSPACE_ROOTS` is set:
 
 ```yaml
 # docker-compose.yml
@@ -143,7 +169,8 @@ All remappable in **Settings → Atalhos**.
 - Nothing is sent to the cloud. The proxy only talks to your LM Studio.
 - Conversations and settings live in your browser's `localStorage` / `IndexedDB`.
 - The OCR language packs (~17 MB) are downloaded from the tesseract.js CDN on first use, then cached locally. After that, fully offline.
-- Filesystem read endpoints (`/api/fs/*`) honor your OS permissions and are sandboxed against path traversal.
+- Filesystem read endpoints (`/api/fs/*`) honor your OS permissions, are sandboxed against path traversal/symlink escape, and require `WORKSPACE_ROOTS` when the app is exposed on LAN.
+- The built-in Basic auth is suitable for small LAN deployments; for company use, put it behind your normal reverse proxy/VPN/SSO as well.
 
 ---
 
