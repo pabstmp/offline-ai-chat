@@ -140,5 +140,64 @@ section("Auth and Origin");
 
 try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
 
+// ─────────────────────────────────────────────────────────────────────────────
+// safeExtractDdgUrl — scheme injection guard
+// ─────────────────────────────────────────────────────────────────────────────
+section("safeExtractDdgUrl — scheme injection guard");
+{
+  const mod = withServer();
+  test("aceita https direto", () => {
+    assert.equal(mod.safeExtractDdgUrl("https://example.com"), "https://example.com/");
+  });
+  test("aceita http direto", () => {
+    assert.equal(mod.safeExtractDdgUrl("http://example.com"), "http://example.com/");
+  });
+  test("bloqueia javascript:", () => {
+    assert.equal(mod.safeExtractDdgUrl("javascript:alert(1)"), null);
+  });
+  test("bloqueia data:", () => {
+    assert.equal(mod.safeExtractDdgUrl("data:text/html,<h1>x</h1>"), null);
+  });
+  test("decodifica redirect /l/?uddg=", () => {
+    assert.equal(
+      mod.safeExtractDdgUrl("https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2F"),
+      "https://example.com/"
+    );
+  });
+  test("bloqueia javascript: dentro de /l/?uddg=", () => {
+    assert.equal(
+      mod.safeExtractDdgUrl("https://duckduckgo.com/l/?uddg=javascript%3Aalert(1)"),
+      null
+    );
+  });
+  test("string vazia retorna null", () => {
+    assert.equal(mod.safeExtractDdgUrl(""), null);
+  });
+  test("null retorna null", () => {
+    assert.equal(mod.safeExtractDdgUrl(null), null);
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rateLimited — cobre /api/tools/web-search e /api/fs/*
+// ─────────────────────────────────────────────────────────────────────────────
+section("rateLimited — threshold e isolamento por IP");
+{
+  const mod = withServer();
+  const fakeReq = { socket: { remoteAddress: "10.0.0.1" } };
+  test("bloqueia após RATE_LIMIT_MAX requisições do mesmo IP", () => {
+    for (let i = 0; i < mod.config.RATE_LIMIT_MAX; i++) mod.rateLimited(fakeReq);
+    assert.equal(mod.rateLimited(fakeReq), true);
+  });
+
+  const mod2 = withServer();
+  test("não contamina IPs diferentes no mesmo bucket", () => {
+    const r1 = { socket: { remoteAddress: "10.0.0.1" } };
+    const r2 = { socket: { remoteAddress: "10.0.0.2" } };
+    for (let i = 0; i < mod2.config.RATE_LIMIT_MAX + 1; i++) mod2.rateLimited(r1);
+    assert.equal(mod2.rateLimited(r2), false);
+  });
+}
+
 console.log(`\nResults: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

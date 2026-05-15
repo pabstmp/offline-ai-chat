@@ -93,14 +93,10 @@ const STATIC_ASSET_EXTENSIONS = new Set([
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
     "default-src 'self'",
-    // script-src estrito: sem 'unsafe-inline'. O registro do service worker
-    // (único inline anterior) foi movido para app.js. Necessario `blob:` aqui
-    // porque o tool sandbox cria <iframe srcdoc=...> com <script> inline; o
-    // srcdoc herda a CSP do parent, então precisamos permitir scripts inline
-    // controlados pelo sandbox iframe. Como o iframe está em origem opaca
-    // (sandbox sem allow-same-origin), o script inline ali não tem acesso ao
-    // localStorage/cookies do parent.
-    "script-src 'self' 'unsafe-inline'",
+    // index.html não tem <script> inline; app.js é o único entry point via <script type="module">.
+    // O sandbox iframe usa srcdoc + sandbox sem allow-same-origin (origem opaca) —
+    // não herda CSP do parent, portanto não exige 'unsafe-inline' aqui.
+    "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "connect-src 'self'",
@@ -1388,11 +1384,6 @@ function safeExtractDdgUrl(rawHref) {
   }
 }
 
-/* Parser do HTML do DDG. As classes deles mudam às vezes — atualmente cada
-   result vem como `<div class="result results_links ... web-result ">` contendo
-   `<a class="result__a">` (título), `result__url` (href) e
-   `<a/span class="result__snippet">` (descrição). Aceita classes extras antes/
-   depois do nome-alvo. */
 /* Parser do HTML do DDG. Splita por `result__body` (cada result vira um chunk
    da posição atual até o próximo `result__body` ou fim do HTML), depois extrai
    title/url/snippet de cada chunk. Mais robusto que tentar regex de bloco
@@ -1404,7 +1395,10 @@ function parseDuckDuckGoHtml(html) {
   const re = /class="[^"]*\bresult__body\b/g;
   let m;
   while ((m = re.exec(html)) !== null) starts.push(m.index);
-  if (!starts.length) return results;
+  if (!starts.length) {
+    console.warn("[ddg-parser] nenhum result__body encontrado — markup pode ter mudado. Prefixo:", html.slice(0, 300));
+    return results;
+  }
   starts.push(html.length); // sentinela pro último chunk
 
   for (let i = 0; i < starts.length - 1 && results.length < 5; i++) {
@@ -1437,6 +1431,8 @@ module.exports = {
   isSameOriginRequestAllowed,
   isStaticPathAllowed,
   isAllowedProxyTarget,
+  safeExtractDdgUrl,
+  rateLimited,
   config: {
     HOST,
     PORT,
@@ -1449,5 +1445,7 @@ module.exports = {
     MAX_BODY_BYTES,
     MAX_FILE_BYTES,
     MAX_PDF_BYTES,
+    RATE_LIMIT_MAX,
+    RATE_LIMIT_WINDOW_MS,
   },
 };
