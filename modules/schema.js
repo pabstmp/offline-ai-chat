@@ -15,9 +15,10 @@ export const DEFAULT_PROFILES = [
     name: "Assistente pessoal",
     icon: "🧭",
     systemPrompt:
-      "Você é um assistente pessoal rodando offline. Responda em português claro, direto e útil. Seja pragmático, organize ideias e peça contexto apenas quando for realmente necessário.",
+      "Você é um assistente pessoal pragmático. Responda em português claro, direto e útil. Organize ideias e peça contexto apenas quando for realmente necessário. Se houver ferramentas disponíveis, use-as proativamente quando forem úteis.",
     defaultModel: "",
     sampling: defaultSampling(),
+    tools: ["builtin-web_search"],
   },
   {
     id: "developer",
@@ -27,6 +28,7 @@ export const DEFAULT_PROFILES = [
       "Você é um engenheiro de software sênior especializado em Python, React, TypeScript e PostgreSQL. Responda em português claro e objetivo. Priorize soluções práticas, código correto, modelagem de dados consistente, segurança, testes e tradeoffs técnicos. Ao revisar código, encontre bugs e riscos antes de sugerir melhorias estéticas.",
     defaultModel: "",
     sampling: { ...defaultSampling(), temperature: 0.4, top_p: 0.9 },
+    tools: ["builtin-run_javascript"],
   },
   {
     id: "document-analyst",
@@ -36,6 +38,7 @@ export const DEFAULT_PROFILES = [
       "Você é um analista de documentos. Responda em português claro e use apenas o contexto fornecido quando houver RAG ou workspace. Extraia fatos, valores, datas, responsáveis e divergências. Se a informação não estiver nos trechos, diga isso claramente. Ao comparar múltiplas fontes, organize a resposta por documento.",
     defaultModel: "",
     sampling: { ...defaultSampling(), temperature: 0.3, top_p: 0.9 },
+    tools: [],
   },
   {
     id: "code-reviewer",
@@ -123,7 +126,8 @@ export function defaultKeymap() {
     openPalette: "Ctrl+K",
     focusComposer: "Ctrl+L",
     stopStream: "Escape",
-    nextProfile: "Ctrl+Shift+P",
+    openPromptPicker: "Ctrl+Shift+P",
+    nextProfile: "Ctrl+Shift+M",
     toggleZen: "Ctrl+\\",
     attachFile: "Ctrl+U",
     quickOpen: "Ctrl+P",
@@ -164,6 +168,7 @@ export function defaults() {
       submitOn: "enter",
       persistConversations: true,
       confirmOnDelete: true,
+      notifications: "disabled",
     },
     activeProfileId: "personal",
     profiles: DEFAULT_PROFILES.map(cloneDefaultProfile),
@@ -180,7 +185,57 @@ export function defaults() {
         { trigger: "/fix", expansion: "Identifique problemas e proponha correções neste código:" },
         { trigger: "/test", expansion: "Escreva testes unitários para:" },
       ],
+      tools: {
+        requireConfirmation: false,
+      },
+      // Configuração da busca web. DDG é default (zero config). Para evitar
+      // os bloqueios anti-bot ocasionais do DDG, o usuário pode colar uma
+      // chave Brave Search API aqui (free 2000/mês em api.search.brave.com).
+      search: {
+        braveApiKey: "",
+      },
     },
+    tools: [
+      {
+        id: "builtin-get_current_datetime",
+        name: "get_current_datetime",
+        description: "Retorna a data e hora atual com timezone do browser no formato ISO 8601.",
+        parameters: { type: "object", properties: {}, required: [] },
+        implementation: "builtin:get_current_datetime",
+        enabled: false,
+        builtIn: true,
+      },
+      {
+        id: "builtin-web_search",
+        name: "web_search",
+        description: "Busca na web e retorna os primeiros resultados com título, URL e snippet.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Termo de busca" }
+          },
+          required: ["query"]
+        },
+        implementation: "builtin:web_search",
+        enabled: false,
+        builtIn: true,
+      },
+      {
+        id: "builtin-run_javascript",
+        name: "run_javascript",
+        description: "Executa código JavaScript e retorna o resultado. Sem acesso a DOM, fetch ou rede.",
+        parameters: {
+          type: "object",
+          properties: {
+            code: { type: "string", description: "Código JavaScript a executar" }
+          },
+          required: ["code"]
+        },
+        implementation: "builtin:run_javascript",
+        enabled: false,
+        builtIn: true,
+      },
+    ],
     workspace: {
       sources: [],
       activeSourceId: null,
@@ -208,6 +263,14 @@ export function defaults() {
       maxPerFile: 2,
       batchSize: 32,
       activeForNextMessage: true,
+      reranking: {
+        enabled: false,
+        rerankModel: "",
+        rerankEndpoint: "",
+        candidateK: 20,
+        finalK: 5,
+        rerankBatchSize: 8,
+      },
     },
     hardwareOverride: null,
   };
@@ -246,50 +309,160 @@ export function migrateV1ToV2(v1) {
   return base;
 }
 
-/* Validation — returns { ok, errors } and best-effort fix in place */
+/* Deep-merge: preenche `target` com chaves ausentes vindas de `source`. Nunca
+   sobrescreve valores não-undefined do target. Arrays e Float32Array são
+   tratados como atômicos (não há merge item-a-item). Usado pelas soft
+   migrations para garantir que campos novos aninhados (ex: rag.reranking.candidateK)
+   cheguem em usuários com config antigo sem destruir o que ele já tem. */
+export function mergeMissing(target, source) {
+  if (source === null || source === undefined) return target;
+  if (typeof source !== "object" || Array.isArray(source)) return target;
+  if (target === null || target === undefined || typeof target !== "object" || Array.isArray(target)) {
+    // Caller deve passar um objeto — clonamos source para não compartilhar ref.
+    return JSON.parse(JSON.stringify(source));
+  }
+  for (const k of Object.keys(source)) {
+    if (target[k] === undefined) {
+      // Clone profundo para não compartilhar refs com defaults().
+      target[k] = source[k] && typeof source[k] === "object"
+        ? JSON.parse(JSON.stringify(source[k]))
+        : source[k];
+    } else if (
+      source[k] && typeof source[k] === "object" && !Array.isArray(source[k]) &&
+      target[k] && typeof target[k] === "object" && !Array.isArray(target[k])
+    ) {
+      mergeMissing(target[k], source[k]);
+    }
+  }
+  return target;
+}
+
+/* Validação por campo crítico. Em vez de só checar "tem >=1 profile", verifica
+   shape mínimo de cada item; itens corrompidos são descartados (com warning).
+   Retorna { ok, errors, data } onde data é o objeto saneado.
+
+   Cenário motivador: localStorage pode ter sido editado à mão ou corrompido
+   parcialmente — `connection.servers` com null no meio explode o app no boot. */
 export function validate(obj) {
   const errors = [];
-  if (!obj || typeof obj !== "object") return { ok: false, errors: ["root not object"], data: defaults() };
-  if (obj.schemaVersion !== SCHEMA_VERSION) errors.push("schemaVersion mismatch");
-  if (!obj.connection || !Array.isArray(obj.connection.servers) || !obj.connection.servers.length) {
-    errors.push("connection.servers vazio");
+  if (!obj || typeof obj !== "object") {
+    return { ok: false, errors: ["root not object"], data: defaults() };
   }
-  if (!Array.isArray(obj.profiles) || !obj.profiles.length) errors.push("profiles vazio");
+  if (obj.schemaVersion !== SCHEMA_VERSION) errors.push("schemaVersion mismatch");
+
+  if (!obj.connection || typeof obj.connection !== "object") {
+    errors.push("connection ausente");
+  } else if (!Array.isArray(obj.connection.servers)) {
+    errors.push("connection.servers nao e array");
+  } else {
+    const cleanServers = obj.connection.servers.filter(
+      (s) => s && typeof s === "object" && typeof s.baseUrl === "string" && typeof s.id === "string"
+    );
+    if (cleanServers.length !== obj.connection.servers.length) {
+      errors.push(`${obj.connection.servers.length - cleanServers.length} server(s) inválido(s) descartado(s)`);
+      obj.connection.servers = cleanServers;
+    }
+    if (!cleanServers.length) errors.push("connection.servers vazio");
+  }
+
+  if (!Array.isArray(obj.profiles)) {
+    errors.push("profiles nao e array");
+  } else {
+    const cleanProfiles = obj.profiles.filter(
+      (p) => p && typeof p === "object" && typeof p.id === "string" &&
+             p.sampling && typeof p.sampling === "object"
+    );
+    if (cleanProfiles.length !== obj.profiles.length) {
+      errors.push(`${obj.profiles.length - cleanProfiles.length} profile(s) inválido(s) descartado(s)`);
+      obj.profiles = cleanProfiles;
+    }
+    if (!cleanProfiles.length) errors.push("profiles vazio");
+  }
   return { ok: errors.length === 0, errors, data: obj };
 }
 
+/* Migration flags expostas para o caller informar o usuário (ex: toast quando
+   v1→v2 acontece, ou re-indexar quando embedder mudou). */
+export const migrationFlags = {
+  v1Migrated: false,
+  embeddingModelBumped: false,
+};
+
 export function loadAndMigrate() {
   // 1. Try v2 directly
+  let needsPersist = false;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      const { ok, data } = validate(parsed);
-      const target = ok ? data : { ...defaults(), ...parsed, schemaVersion: SCHEMA_VERSION };
+      const { ok, errors, data } = validate(parsed);
+      if (!ok && errors.length) console.warn("Schema validation:", errors.join("; "));
+      const target = data;
+      target.schemaVersion = SCHEMA_VERSION;
       ensureDefaultProfiles(target);
-      // Soft migrations of sampling.max_tokens to whatever current default
-      // covers thinking models without finish_reason=length.
-      // - null  → 12000 (very old config, never had a max_tokens)
-      // - 4096  → 12000 (previous default — thinking models routinely burn
-      //                  3000-5000 tokens in CoT alone, leaving nothing for
-      //                  the actual answer)
-      // Users who picked any other value keep it.
+
+      // Soft migrations campo-a-campo (semântica explícita, não automatizada):
+      //   max_tokens: thinking models burn 3000-5000 tokens só em CoT.
+      //   4096 (default antigo) e null sobem pra 12000. Outros valores fica.
       if (Array.isArray(target.profiles)) {
         for (const p of target.profiles) {
           if (!p.sampling) continue;
           if (p.sampling.max_tokens == null || p.sampling.max_tokens === 4096) {
             p.sampling.max_tokens = 12000;
+            needsPersist = true;
           }
         }
       }
-      // Soft migration of embeddingModel: the default used to be the English-
-      // leaning nomic-embed-text-v1.5. Qwen3-Embedding-4B is top-1 MTEB and
-      // multilingual, so anyone still on the old default gets bumped. The
-      // existing index will become invalid (different vector space + different
-      // dim count) — retrieve() rejects with a clear "modelo diferente" error
-      // and the user just needs to click "Re-indexar".
+      //   embeddingModel: nomic (default antigo) → Qwen3-Embedding-4B (multilingual,
+      //   top-1 MTEB). Index antigo fica inválido (dim diferente) → retrieve() rejeita
+      //   com erro claro e usuário re-indexa.
       if (target.rag && target.rag.embeddingModel === "nomic-embed-text-v1.5") {
         target.rag.embeddingModel = "text-embedding-qwen3-embedding-4b";
+        migrationFlags.embeddingModelBumped = true;
+        needsPersist = true;
+      }
+      //   personal profile: prompt antigo dizia "rodando offline" que biasa o
+      //   modelo contra usar tools (web_search). Só substitui se o prompt
+      //   ainda for o original (usuário customizado não é tocado).
+      const OLD_PERSONAL_PROMPT =
+        "Você é um assistente pessoal rodando offline. Responda em português claro, direto e útil. Seja pragmático, organize ideias e peça contexto apenas quando for realmente necessário.";
+      if (Array.isArray(target.profiles)) {
+        const personal = target.profiles.find((p) => p && p.id === "personal");
+        if (personal && personal.systemPrompt === OLD_PERSONAL_PROMPT) {
+          personal.systemPrompt =
+            "Você é um assistente pessoal pragmático. Responda em português claro, direto e útil. Organize ideias e peça contexto apenas quando for realmente necessário. Se houver ferramentas disponíveis, use-as proativamente quando forem úteis.";
+          needsPersist = true;
+        }
+        // Default tools: se o usuário nunca tocou em tools (array vazio) e o
+        // perfil é o personal/developer, ligar web_search por padrão pra que
+        // a UX padrão já inclua busca web.
+        if (personal && Array.isArray(personal.tools) && personal.tools.length === 0) {
+          personal.tools = ["builtin-web_search"];
+          needsPersist = true;
+        }
+      }
+
+      // Soft merge recursivo: garante que QUALQUER campo novo dentro de objetos
+      // aninhados (rag.reranking.candidateK, advanced.tools.requireConfirmation,
+      // etc) chega em usuários com config antigo sem sobrescrever escolhas.
+      const before = JSON.stringify(target);
+      mergeMissing(target, defaults());
+      if (JSON.stringify(target) !== before) needsPersist = true;
+
+      // tools array: defaults() já cobre via mergeMissing, mas garantir tipos.
+      if (!Array.isArray(target.tools)) {
+        target.tools = defaults().tools;
+        needsPersist = true;
+      }
+      if (Array.isArray(target.profiles)) {
+        for (const p of target.profiles) {
+          if (!Array.isArray(p.tools)) { p.tools = []; needsPersist = true; }
+        }
+      }
+
+      // Persistir após soft migration para não repetir o trabalho no próximo boot.
+      if (needsPersist) {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(target)); } catch {}
       }
       return target;
     }
@@ -305,6 +478,7 @@ export function loadAndMigrate() {
       const v2 = migrateV1ToV2(v1);
       localStorage.setItem(STORAGE_KEY_V1_BACKUP, v1raw);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(v2));
+      migrationFlags.v1Migrated = true;
       return v2;
     }
   } catch (e) {

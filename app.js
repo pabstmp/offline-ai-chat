@@ -2,13 +2,17 @@
 
 import { createStore, debounce } from "./modules/store.js";
 import {
-  loadAndMigrate, persist, defaults, defaultSampling,
+  loadAndMigrate, persist, defaults, defaultSampling, migrationFlags,
 } from "./modules/schema.js";
 import { conversationStore } from "./modules/storage.js";
 import {
   normalizeBaseUrl, listModels, requestCompletion,
   formatFetchError, buildSamplingPayload,
+  extractToolCalls, extractFinishReason,
 } from "./modules/api.js";
+import {
+  getOpenAIToolDefinitions, executeTool,
+} from "./modules/tools/manager.js";
 import { applyAppearance } from "./modules/theme.js";
 import {
   registerAction, setKeymap, bindGlobalShortcuts,
@@ -19,18 +23,18 @@ import {
   initChat, renderMessage, renderAllMessages,
   setBodyContent, appendStreamingDelta, finalizeAssistant,
   scrollToBottom, startGenerationTimer, stopGenerationTimer,
+  renderToolCallBlock, showToolProgress,
 } from "./modules/ui/chat.js";
 import { forkMessagesAt, createFork } from "./modules/ui/chat-helpers.js";
 import { getAlternativeProfiles, replaceMessageContent } from "./modules/ui/chat-helpers.js";
 import {
   initComposer, clearComposer, focusComposer, setBusy as setComposerBusy,
-  setComposerValue, setHistoryTokens, getPendingImage, clearPendingImage,
+  setComposerValue, setHistoryTokens, getPendingImage, clearPendingImage, insertPromptText
 } from "./modules/ui/composer.js";
 import { buildImageMessageContent } from "./modules/ui/composer-helpers.js";
-import {
-  initSidebar, refreshSidebar, setActiveConversation, toggleSidebar, closeSidebar,
-} from "./modules/ui/sidebar.js";
+import { initSidebar, refreshSidebar, setActiveConversation, toggleSidebar, closeSidebar } from "./modules/ui/sidebar.js";
 import { initPalette, openPalette } from "./modules/ui/palette.js";
+import { openPromptPicker } from "./modules/ui/prompt-picker.js";
 import { initSettings, openSettings, closeSettings, setModelOptions } from "./modules/ui/settings.js";
 import { initWorkspace, preprocessSlashCommands } from "./modules/ui/workspace.js";
 import {
@@ -40,6 +44,11 @@ import * as rag from "./modules/rag/manager.js";
 import { templateStore, createTemplate, initConversationFromTemplate } from "./modules/templates.js";
 import { ragIndicatorShouldShow, shouldShowServerDropdown, nextServerIndex, shouldAutoScroll, getScrollPosition } from "./modules/app-helpers.js";
 import { getBodyOverflowForModal } from "./modules/ui/chat-helpers.js";
+import { exportConversation } from "./modules/exporter.js";
+import { initNotifications, notifyResponseComplete } from "./modules/notifications.js";
+import {
+  initComparison, openComparison, closeComparison, isComparisonActive,
+} from "./modules/ui/comparison.js";
 
 /* ---------- elements ---------- */
 
@@ -58,8 +67,10 @@ const elements = {
   statusLabel: $("#statusLabel"),
   ragIndexingIndicator: $("#ragIndexingIndicator"),
   workspaceToggle: $("#workspaceToggle"),
+  compareToggle: $("#compareToggle"),
   paletteButton: $("#paletteButton"),
   settingsButton: $("#settingsButton"),
+  comparisonView: $("#comparisonView"),
   // sidebar
   sidebar: $("#sidebar"),
   sidebarBackdrop: $("#sidebarBackdrop"),
@@ -572,7 +583,7 @@ async function tryRagRetrieve(rawText, server, baseUrl, profile) {
   }
 
   try {
-    const results = await rag.retrieve({
+    const retrievalResult = await rag.retrieve({
       sourceId,
       query: rawText,
       embedConfig: {
@@ -585,7 +596,11 @@ async function tryRagRetrieve(rawText, server, baseUrl, profile) {
       includeFirstPerFile: !!strategy.includeFirstPerFile,
       coverAllFiles: !!strategy.coverAllFiles,
       exhaustive: !!strategy.exhaustive,
+      rerankConfig: ragCfg.reranking || null,
+      signal: runtime.abortController?.signal,
     });
+    const results = retrievalResult.chunks;
+    runtime.lastRerankApplied = retrievalResult._rerankApplied;
     if (!results.length) return { applied: false };
     const filesInResult = new Set(results.map((r) => r.path)).size;
     const wasExhaustive = results.length > 0 && results[0]._reason === "exhaustive";
@@ -694,10 +709,24 @@ async function refreshRagPill() {
     return;
   }
 
+  // Reranking status
+  const rerankCfg = ragCfg.reranking;
+  const isRerankEnabled = rerankCfg?.enabled && rerankCfg?.rerankModel;
+  let rerankSuffix = "";
+  let titleRerankStr = "";
+  if (isRerankEnabled) {
+    if (runtime.lastRerankApplied === false) {
+      rerankSuffix = " + rerank ⚠";
+      titleRerankStr = " · Reranking falhou na última consulta — usando ordem por cosine similarity";
+    } else {
+      rerankSuffix = " + rerank";
+    }
+  }
+
   // All good
-  setState("ready", `RAG · ${meta.chunkCount} chunks`,
+  setState("ready", `RAG · ${meta.chunkCount} chunks${rerankSuffix}`,
     ragCfg.activeForNextMessage
-      ? `RAG ativo · ${meta.chunkCount} chunks de ${meta.fileCount} arquivos · clique pra desativar nesta mensagem`
+      ? `RAG ativo · ${meta.chunkCount} chunks de ${meta.fileCount} arquivos${titleRerankStr} · clique pra desativar nesta mensagem`
       : `RAG desativado pra esta mensagem · clique pra reativar`);
 }
 
@@ -781,14 +810,22 @@ async function submitMessage(rawText) {
   const useStreaming = store.get("advanced.streaming");
   const sampling = buildSamplingPayload(profile.sampling);
   const messages = [];
-  if (profile.systemPrompt) messages.push({ role: "system", content: profile.systemPrompt });
+  const sysPrompt = buildEffectiveSystemPrompt(profile);
+  if (sysPrompt) messages.push({ role: "system", content: sysPrompt });
   for (const m of runtime.currentConversation.messages.slice(0, -1)) {
     messages.push({ role: m.role, content: m.content });
   }
   // replace last user with potentially-injected version
   messages.push({ role: "user", content: userContent });
 
-  const payload = { messages, model, stream: useStreaming, ...sampling };
+  const profileTools = getOpenAIToolDefinitions(store.get("tools") || [], profile.tools || []);
+  const payload = {
+    messages,
+    model,
+    stream: useStreaming,
+    ...sampling,
+    ...(profileTools ? { tools: profileTools } : {})
+  };
   if (store.get("advanced.debugMode")) {
     console.group("offline-ai request");
     console.log({ baseUrl, payload });
@@ -815,6 +852,21 @@ async function submitMessage(rawText) {
     assistantReasoning = result.reasoning;
     usage = result.usage;
     finishReason = result.finishReason;
+
+    // Tool calls têm prioridade sobre QUALQUER diagnóstico de conteúdo vazio.
+    // Modelos chamando ferramenta legitimamente emitem `content=""` e
+    // `finish_reason=tool_calls` — o auto-fix de max_tokens não deve disparar.
+    if (finishReason === "tool_calls" || result.toolCalls) {
+      const toolCalls = result.toolCalls || extractToolCalls(result);
+      if (toolCalls && toolCalls.length) {
+        stopGenerationTimer(timerHandle);
+        assistantMsg.tool_calls = toolCalls;
+        await runToolCycle(toolCalls, assistantBody, assistantMsg, {
+          baseUrl, apiKey: server.apiKey, model, profile, sampling, useStreaming
+        });
+        return; // runToolCycle handles the next assistant turn
+      }
+    }
 
     if (!assistantContent.trim() && assistantReasoning.trim()) {
       // Reasoning consumed all available output tokens. Two possible causes:
@@ -878,9 +930,11 @@ async function submitMessage(rawText) {
     }
 
     stopGenerationTimer(timerHandle);
+
     finalizeAssistant(assistantBody, assistantContent, false, assistantReasoning, { usage, finishReason, elapsed: timerHandle.getElapsed() });
     assistantMsg.content = assistantContent;
     if (assistantReasoning) assistantMsg.reasoning = assistantReasoning;
+    notifyResponseComplete();
     setStatus("connected", "Pronto");
   } catch (error) {
     if (error?.name === "AbortError") {
@@ -904,6 +958,291 @@ async function submitMessage(rawText) {
     setComposerBusy(false);
     saveCurrentConversation();
     recomputeHistoryTokens();
+  }
+}
+
+/**
+ * Pede confirmação ao usuário antes de executar uma tool call. Usa <dialog>
+ * nativo (zero deps). Resolve com true se aprovado, false se cancelado.
+ *
+ * Acionado quando `advanced.tools.requireConfirmation` está ligado. O nome da
+ * tool e os argumentos brutos (JSON) são mostrados.
+ */
+function confirmToolCall(toolCall) {
+  return new Promise((resolve) => {
+    const dlg = document.createElement("dialog");
+    dlg.className = "tool-confirm-dialog";
+    dlg.innerHTML = `
+      <form method="dialog" class="tool-confirm-form">
+        <h3 class="tool-confirm-title">Executar ferramenta?</h3>
+        <p class="tool-confirm-name"><strong>${escapeHtml(toolCall.function.name)}</strong></p>
+        <div class="tool-confirm-args-label">Argumentos:</div>
+        <pre class="tool-confirm-args"></pre>
+        <menu class="tool-confirm-actions">
+          <button type="submit" value="cancel" class="btn btn-secondary">Cancelar</button>
+          <button type="submit" value="ok" class="btn btn-primary">Executar</button>
+        </menu>
+      </form>
+    `;
+    // Args como textContent (escape automático de tags) em vez de innerHTML.
+    const argsPre = dlg.querySelector(".tool-confirm-args");
+    try {
+      argsPre.textContent = JSON.stringify(JSON.parse(toolCall.function.arguments || "{}"), null, 2);
+    } catch {
+      argsPre.textContent = String(toolCall.function.arguments || "");
+    }
+    document.body.appendChild(dlg);
+    dlg.addEventListener("close", () => {
+      const approved = dlg.returnValue === "ok";
+      dlg.remove();
+      resolve(approved);
+    }, { once: true });
+    if (typeof dlg.showModal === "function") dlg.showModal();
+    else { dlg.setAttribute("open", "true"); /* fallback */ }
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+
+/**
+ * Constrói o system prompt efetivo: o que o usuário escreveu no perfil + uma
+ * orientação automática sobre as ferramentas ativas. UX: o usuário liga
+ * `web_search` no perfil e o modelo passa a chamá-la sem precisar ouvir
+ * "use web_search" em toda pergunta.
+ *
+ * Não modifica `profile.systemPrompt` armazenado — só constrói a versão
+ * efetiva no momento do envio.
+ */
+function buildEffectiveSystemPrompt(profile) {
+  const base = profile.systemPrompt || "";
+  const enabledIds = profile.tools || [];
+  if (!enabledIds.length) return base;
+  const allTools = store.get("tools") || [];
+  const enabled = enabledIds.map(id => allTools.find(t => t.id === id)).filter(Boolean);
+  if (!enabled.length) return base;
+
+  const hints = [];
+  for (const tool of enabled) {
+    if (tool.name === "web_search") {
+      hints.push(
+        "- `web_search(query)` — Use proativamente quando o usuário pedir dados em tempo real ou recentes: " +
+        "cotações, preços, notícias, datas atuais, versões de software, eventos. Cite as URLs das fontes na resposta. " +
+        "Se a busca retornar erro (anti-bot, timeout, sem resultados), **NÃO chame de novo** — uma nova query não " +
+        "vai resolver o problema. Apenas reporte ao usuário o que aconteceu em português claro, e se o erro mencionar " +
+        "anti-bot/CAPTCHA sugira configurar uma chave Brave Search em Configurações → Avançado."
+      );
+    } else if (tool.name === "get_current_datetime") {
+      hints.push("- `get_current_datetime()` — Use quando precisar saber data ou hora atual.");
+    } else if (tool.name === "run_javascript") {
+      hints.push("- `run_javascript(code)` — Use para cálculos numéricos precisos ou processamento de strings que exigem exatidão. Sem acesso a DOM/rede.");
+    } else {
+      const desc = tool.description ? `: ${tool.description}` : "";
+      hints.push(`- \`${tool.name}\` — Use quando apropriado${desc}`);
+    }
+  }
+
+  const orientation =
+    "\n\nFerramentas disponíveis (chame proativamente sem esperar instrução explícita):\n" +
+    hints.join("\n");
+  return base + orientation;
+}
+
+/**
+ * Remove os markers internos `__WEB_SEARCH_OK__:provider:` ou
+ * `__WEB_SEARCH_ERROR__:code:braveStatus:` antes de mostrar o resultado pro
+ * LLM. Os markers existem só pra UI conseguir renderizar caixa de erro/chip
+ * de provider — o modelo recebe texto limpo. O caller guarda a versão com
+ * marker em `_display` no tool message para que o re-render do histórico
+ * mantenha a UI rica.
+ */
+function stripWebSearchMarker(result) {
+  if (typeof result !== "string") return result;
+  if (result.startsWith("__WEB_SEARCH_OK__:")) {
+    const rest = result.slice("__WEB_SEARCH_OK__:".length);
+    const colon = rest.indexOf(":");
+    return colon >= 0 ? rest.slice(colon + 1) : rest;
+  }
+  if (result.startsWith("__WEB_SEARCH_ERROR__:")) {
+    // Formato: __WEB_SEARCH_ERROR__:<code>:<braveStatus>:<msg>
+    const rest = result.slice("__WEB_SEARCH_ERROR__:".length);
+    const parts = rest.split(":");
+    parts.shift(); // code
+    parts.shift(); // braveStatus
+    return `Erro na busca: ${parts.join(":")}`;
+  }
+  return result;
+}
+
+/**
+ * Ciclo de execução de ferramentas e nova inferência.
+ */
+async function runToolCycle(toolCalls, assistantBody, assistantMsg, context, depth = 1) {
+  if (depth > 5) {
+    finalizeAssistant(assistantBody, "Erro: limite de 5 iterações de ferramentas excedido para evitar loops infinitos.", true);
+    return;
+  }
+  // Bail-out preguiçoso: se o usuário já apertou Stop entre iterações, não
+  // gastar uma nova rodada de inferência só pra cancelar no meio.
+  if (runtime.abortController?.signal?.aborted) {
+    finalizeAssistant(assistantBody, "Interrompido.", false);
+    return;
+  }
+
+  const allTools = store.get("tools") || [];
+  const requireConfirm = store.get("advanced.tools.requireConfirmation");
+
+  // Trava anti-retry: se algum web_search falhou neste ciclo, vamos sumarizar
+  // pro usuário e proibir uma nova chamada de tool. O modelo às vezes ignora
+  // a orientação textual e tenta de novo — esta trava é determinística.
+  let hadFailedWebSearch = false;
+
+  // 1. Executar ferramentas
+  const toolMessages = [];
+  for (const tc of toolCalls) {
+    if (runtime.abortController?.signal?.aborted) {
+      finalizeAssistant(assistantBody, "Interrompido durante execução de ferramentas.", false);
+      return;
+    }
+    const block = renderToolCallBlock(assistantBody, tc);
+
+    if (requireConfirm) {
+      const approved = await confirmToolCall(tc);
+      if (!approved) {
+        renderToolCallBlock(assistantBody, tc, "(cancelado pelo usuário)", block);
+        toolMessages.push({
+          role: "tool",
+          tool_call_id: tc.id,
+          name: tc.function.name,
+          content: "Cancelado pelo usuário."
+        });
+        continue;
+      }
+    }
+
+    const result = await executeTool(tc, allTools, {
+      signal: runtime.abortController?.signal,
+      braveApiKey: store.get("advanced.search.braveApiKey") || "",
+    });
+
+    // Atualiza o bloco existente in-place (display preserva markers de UI).
+    renderToolCallBlock(assistantBody, tc, result, block);
+
+    // Detectar falha de web_search pra travar retry determinístico.
+    if (typeof result === "string" && result.startsWith("__WEB_SEARCH_ERROR__:")) {
+      hadFailedWebSearch = true;
+    }
+
+    // O modelo recebe versão limpa (sem markers), mas guardamos `_display`
+    // para o re-render do histórico mostrar UI rica (caixa de erro / chip
+    // de provider) em vez de texto cru.
+    toolMessages.push({
+      role: "tool",
+      tool_call_id: tc.id,
+      name: tc.function.name,
+      content: stripWebSearchMarker(result),
+      _display: result,
+    });
+  }
+
+  // Adiciona as tool messages ao histórico real da conversa
+  runtime.currentConversation.messages.push(...toolMessages);
+  
+  // 2. Nova inferência com os resultados
+  showToolProgress(assistantBody);
+  
+  const messages = [];
+  const sysPrompt = buildEffectiveSystemPrompt(context.profile);
+  if (sysPrompt) messages.push({ role: "system", content: sysPrompt });
+  // Inclui todo o histórico atualizado (incluindo a assistant msg com tool_calls e as tool results)
+  for (const m of runtime.currentConversation.messages) {
+    const msg = { role: m.role, content: m.content || "" };
+    if (m.tool_calls) msg.tool_calls = m.tool_calls;
+    if (m.role === "tool") msg.tool_call_id = m.tool_call_id;
+    messages.push(msg);
+  }
+
+  const profileTools = getOpenAIToolDefinitions(allTools, context.profile.tools || []);
+  const payload = {
+    messages,
+    model: context.model,
+    stream: context.useStreaming,
+    ...context.sampling,
+    ...(profileTools ? { tools: profileTools } : {})
+  };
+
+  const nextAssistantMsg = { role: "assistant", content: "", ts: Date.now(), id: `m-${Date.now()}-a` };
+  runtime.currentConversation.messages.push(nextAssistantMsg);
+  
+  const timerHandle = startGenerationTimer(assistantBody);
+  let nextContent = "";
+  let nextReasoning = "";
+
+  try {
+    const result = await requestCompletion(
+      { baseUrl: context.baseUrl, apiKey: context.apiKey, payload, signal: runtime.abortController?.signal },
+      (_delta, full) => {
+        nextContent = full.content;
+        nextReasoning = full.reasoning;
+        appendStreamingDelta(assistantBody, full.content, full.reasoning);
+        timerHandle.setTokenCount(estimateTokens(full.content));
+      }
+    );
+
+    stopGenerationTimer(timerHandle);
+
+    // Recursão se houver mais tool_calls — MAS bloqueada se já tivemos falha
+    // de web_search neste ciclo. Sem isso o modelo às vezes ignora a orientação
+    // textual e retenta 3-4 vezes, gerando ruído na UI.
+    const nextFinishReason = result.finishReason || extractFinishReason(result);
+    if ((nextFinishReason === "tool_calls" || result.toolCalls) && !hadFailedWebSearch) {
+      const nextToolCalls = result.toolCalls || extractToolCalls(result);
+      if (nextToolCalls) {
+        nextAssistantMsg.tool_calls = nextToolCalls;
+        await runToolCycle(nextToolCalls, assistantBody, nextAssistantMsg, context, depth + 1);
+        return;
+      }
+    } else if (hadFailedWebSearch && (nextFinishReason === "tool_calls" || result.toolCalls)) {
+      // Modelo quis chamar tool de novo após falha — corta e mostra mensagem
+      // útil pro usuário ao invés de deixar ele em loop silencioso.
+      const fallbackMsg =
+        (result.content && result.content.trim()) ||
+        "Não consegui buscar essa informação online (anti-bot/timeout). " +
+        "Configure uma chave Brave Search em Configurações → Avançado para uma busca mais confiável.";
+      finalizeAssistant(assistantBody, fallbackMsg, false, result.reasoning, {
+        usage: result.usage,
+        finishReason: "stopped-by-app",
+        elapsed: timerHandle.getElapsed(),
+      });
+      nextAssistantMsg.content = fallbackMsg;
+      if (result.reasoning) nextAssistantMsg.reasoning = result.reasoning;
+      notifyResponseComplete();
+      saveCurrentConversation();
+      recomputeHistoryTokens();
+      setStatus("connected", "Pronto");
+      return;
+    }
+
+    finalizeAssistant(assistantBody, result.content, false, result.reasoning, {
+      usage: result.usage, 
+      finishReason: nextFinishReason, 
+      elapsed: timerHandle.getElapsed() 
+    });
+    nextAssistantMsg.content = result.content;
+    if (result.reasoning) nextAssistantMsg.reasoning = result.reasoning;
+    
+    notifyResponseComplete();
+    saveCurrentConversation();
+    recomputeHistoryTokens();
+    setStatus("connected", "Pronto");
+
+  } catch (err) {
+    stopGenerationTimer(timerHandle);
+    finalizeAssistant(assistantBody, `Erro no ciclo de ferramentas: ${err.message}`, true);
+    setStatus("error", "Erro");
   }
 }
 
@@ -939,8 +1278,11 @@ async function handleSidebarAction({ action, conversation }) {
     downloadFile(`${conversation.title || conversation.id}.json`,
       JSON.stringify(conversation, null, 2), "application/json");
   } else if (action === "export-md") {
-    const md = conversationToMarkdown(conversation);
-    downloadFile(`${conversation.title || conversation.id}.md`, md, "text/markdown");
+    const conv = await conversationStore.get(conversation.id) || conversation;
+    exportConversation(conv, "md", toast);
+  } else if (action === "export-html") {
+    const conv = await conversationStore.get(conversation.id) || conversation;
+    exportConversation(conv, "html", toast);
   } else if (action === "save-template") {
     const name = prompt("Nome do template:", conversation.title || "Meu template");
     if (!name || !name.trim()) return;
@@ -1049,7 +1391,10 @@ async function generateABResponse(altProfile, message, node, body) {
   // Build payload with alternative profile
   const sampling = buildSamplingPayload(altProfile.sampling);
   const messages = [];
-  if (altProfile.systemPrompt) messages.push({ role: "system", content: altProfile.systemPrompt });
+  {
+    const altSys = buildEffectiveSystemPrompt(altProfile);
+    if (altSys) messages.push({ role: "system", content: altSys });
+  }
   for (const m of conv.messages.slice(0, idx)) {
     messages.push({ role: m.role, content: m.content });
   }
@@ -1478,6 +1823,27 @@ async function init() {
   // toasts
   initToasts(elements.toasts);
 
+  // Avisar usuário quando configurações foram migradas/atualizadas.
+  // v1Migrated: schema antigo migrado pra v2 — alguns campos podem ter sido
+  // perdidos (prompt library customizada, slash commands, etc) porque a
+  // migração só cobre os campos críticos.
+  // embeddingModelBumped: default trocado de nomic pra Qwen3 — index antigo
+  // ficou inválido e usuário precisa re-indexar.
+  if (migrationFlags.v1Migrated) {
+    setTimeout(() => toast(
+      "Configurações migradas para v2. Revise RAG, prompts e tools em Configurações — alguns campos voltaram ao default.",
+      "info",
+      9000
+    ), 250);
+  }
+  if (migrationFlags.embeddingModelBumped) {
+    setTimeout(() => toast(
+      "Modelo de embedding default mudou para Qwen3-Embedding-4B. Re-indexe seus workspaces RAG.",
+      "warn",
+      9000
+    ), 500);
+  }
+
   // store changes → debounced persist
   store.subscribe(() => debouncedPersist());
 
@@ -1518,7 +1884,50 @@ async function init() {
     toast,
     refreshSidebar,
   });
-  initWorkspace({ elements, store });
+  initWorkspace({ store, elements, onChange: debouncedPersist });
+  
+  initComparison({
+    store,
+    elements,
+    // Comparison precisa da lista de modelos sem acoplar a `window.runtime`
+    // (bug anterior: window.runtime nunca foi exposto, então o select ficava
+    // sempre vazio). Pull-based: re-puxa a cada openComparison.
+    getModels: () => runtime.models || [],
+    onUseResponse: async (conv) => {
+      await conversationStore.upsert(conv);
+      refreshSidebar();
+      await loadConversation(conv.id);
+    },
+    onClose: () => {
+      elements.compareToggle.setAttribute("aria-pressed", "false");
+    },
+  });
+
+  elements.compareToggle.addEventListener("click", () => {
+    if (isComparisonActive()) {
+      closeComparison();
+    } else {
+      openComparison();
+      elements.compareToggle.setAttribute("aria-pressed", "true");
+    }
+  });
+
+  // Ponte: erros estruturados de tool (chat.js) pedem pra abrir Settings com
+  // âncora específica. Mantém o chat desacoplado da implementação do drawer.
+  document.addEventListener("open-settings", (ev) => {
+    const { tab, anchor } = ev.detail || {};
+    openSettings(tab || "advanced");
+    if (anchor) {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(anchor);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  });
+
+  registerAction("compare-mode", "Alternar modo de comparação", "Ctrl+Shift+C", () => {
+    elements.compareToggle.click();
+  });
 
   // topbar
   elements.sidebarToggle.addEventListener("click", toggleSidebar);
@@ -1539,6 +1948,9 @@ async function init() {
   }
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.paletteButton.addEventListener("click", () => openPalette(buildPaletteCommands()));
+
+  // Notifications
+  initNotifications({ store, toastFn: toast });
 
   // stop button
   elements.stopButton.addEventListener("click", () => runtime.abortController?.abort());
@@ -1602,6 +2014,7 @@ async function init() {
     else closeSettings();
   });
   registerAction("nextProfile", nextProfile);
+  registerAction("openPromptPicker", () => openPromptPicker(store, insertPromptText));
   registerAction("toggleZen", toggleZen);
   registerAction("attachFile", () => elements.attachButton?.click());
   registerAction("toggleWorkspace", () => elements.workspaceToggle?.click());
@@ -1649,3 +2062,11 @@ init().catch((err) => {
   console.error(err);
   toast(`Erro: ${err.message}`, "error", 6000);
 });
+
+// Service worker registrado aqui (em vez de inline em index.html) para
+// permitir CSP estrita: script-src 'self' sem 'unsafe-inline'.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}

@@ -34,7 +34,7 @@ export function initWorkspace(opts) {
   // attach button (in composer bar)
   if (elements.attachButton) {
     elements.attachButton.addEventListener("click", async () => {
-      const result = await upload.pickFiles({ maxBytes: ws.maxFileBytes });
+      const result = await upload.pickFiles({ maxBytes: ws.maxFileBytes, ocr: !!ws.ocrEnabled });
       const files = result.files || result; // backwards-compat
       const skipped = result.skipped || [];
       if (files.length) {
@@ -58,6 +58,7 @@ export function initWorkspace(opts) {
     ignorePatterns: ws.ignorePatterns || [],
     maxFileBytes: ws.maxFileBytes || 256 * 1024,
     maxTotalBytes: ws.maxTotalBytes || 4 * 1024 * 1024,
+    ocr: !!ws.ocrEnabled,
     onFiles: (files) => {
       if (files.length) {
         addFiles(files, "dragdrop", "Drag-and-drop");
@@ -370,7 +371,20 @@ async function renderServerNode(sourceRoot, relPath) {
         { name: entry.name, kind: entry.kind === "dir" ? "directory" : "file" },
         relPath,
         async () => {
-          const file = await fsbridge.fsRead(sourceRoot, fullRel);
+          const isPdf = fullRel.toLowerCase().endsWith(".pdf");
+          let file;
+          if (isPdf) {
+            const ws = store.get("workspace") || {};
+            file = await fsbridge.fsReadPdf(sourceRoot, fullRel, { ocr: !!ws.ocrEnabled });
+            if (file.meta?.ocrLikelyNeeded && !file.meta?.ocrApplied) {
+              toast("Documento parece escaneado. Ative OCR no Workspace.", "warn", 6000);
+            }
+            if (file.meta?.ocrApplied) {
+              toast(`OCR aplicado em ${file.meta.pagesOcred} página(s)`, "info");
+            }
+          } else {
+            file = await fsbridge.fsRead(sourceRoot, fullRel);
+          }
           addFile({ sourceId: activeSource.id, sourceLabel: activeSource.label, path: fullRel, content: file.content, size: file.size });
           toast(`Incluído: ${fullRel}`, "success");
         },
@@ -453,7 +467,20 @@ function renderSearchResults(container, results, query) {
     item.appendChild(snippet);
     item.addEventListener("click", async () => {
       try {
-        const file = await fsbridge.fsRead(activeSource.root, m.path);
+        const isPdf = m.path.toLowerCase().endsWith(".pdf");
+        let file;
+        if (isPdf) {
+          const ws = store.get("workspace") || {};
+          file = await fsbridge.fsReadPdf(activeSource.root, m.path, { ocr: !!ws.ocrEnabled });
+          if (file.meta?.ocrLikelyNeeded && !file.meta?.ocrApplied) {
+            toast("Documento parece escaneado. Ative OCR no Workspace.", "warn", 6000);
+          }
+          if (file.meta?.ocrApplied) {
+            toast(`OCR aplicado em ${file.meta.pagesOcred} página(s)`, "info");
+          }
+        } else {
+          file = await fsbridge.fsRead(activeSource.root, m.path);
+        }
         addFile({ sourceId: activeSource.id, sourceLabel: activeSource.label, path: m.path, content: file.content, size: file.size });
         toast(`Incluído: ${m.path}`, "success");
       } catch (err) { toast(err.message, "error"); }

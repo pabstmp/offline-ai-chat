@@ -205,6 +205,7 @@ export const CATALOG = [
     contextWindow: 256_000,
     strengths: ["raciocínio", "multimodal", "256k ctx"],
     thinking: true,
+    vision: true,
     notes: "Google. Multimodal (texto+imagem). Context 256k. ⚠ Thinking model — use max_tokens 4000+.",
     lmStudioSearch: "gemma-4-26b gguf",
     category: "general",
@@ -221,6 +222,7 @@ export const CATALOG = [
     contextWindow: 128_000,
     strengths: ["multimodal", "leve"],
     thinking: true,
+    vision: true,
     notes: "Versão pequena do Gemma 4. ⚠ Thinking model — use max_tokens 4000+.",
     lmStudioSearch: "gemma-4-e4b gguf",
     category: "general",
@@ -455,6 +457,41 @@ export function isLikelyThinkingModel(modelIdOrName) {
     /\bo3\b/,
     /thinking/,
     /reasoning/,
+  ];
+  return patterns.some((re) => re.test(s));
+}
+
+/* Detect if a model id is likely a vision/multimodal model.
+   Matches known VLM families, vision keywords, and catalog entries with vision:true. */
+export function isLikelyVisionModel(modelIdOrName) {
+  if (!modelIdOrName) return false;
+  const s = modelIdOrName.toLowerCase();
+
+  // Check catalog first
+  const catalogEntry = CATALOG.find((m) =>
+    s.includes(m.id) || s.includes(m.name.toLowerCase())
+  );
+  if (catalogEntry?.vision) return true;
+
+  // Heuristic patterns for known VLMs
+  const patterns = [
+    /gemma-?4/,              // Gemma 4 is multimodal
+    /llava/,                 // LLaVA family
+    /vision/,
+    /vlm/,
+    /pixtral/,               // Mistral Pixtral
+    /bakllava/,
+    /moondream/,
+    /nanollava/,
+    /cogvlm/,
+    /qwen-?vl/,              // Qwen-VL
+    /qwen2-?vl/,
+    /internvl/,
+    /phi-?3\.?5-?vision/,
+    /phi-?4-?vision/,
+    /obsidian/,
+    /minicpm-?v/,
+    /nemotron-?omni/,
   ];
   return patterns.some((re) => re.test(s));
 }

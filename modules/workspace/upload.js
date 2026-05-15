@@ -41,7 +41,7 @@ export function pickFiles(opts = {}) {
       const result = { files: [], skipped: [] };
       result.files = await readFiles(
         [...input.files],
-        opts.maxBytes || Infinity,
+        { maxBytes: opts.maxBytes || Infinity, ocr: opts.ocr },
         (skipped) => { result.skipped = skipped; }
       );
       resolve(result);
@@ -50,9 +50,10 @@ export function pickFiles(opts = {}) {
   });
 }
 
-export async function readFiles(fileList, maxBytes = Infinity, onSkipped) {
+export async function readFiles(fileList, opts = {}, onSkipped) {
   const result = [];
   const skipped = [];
+  const maxBytes = opts.maxBytes || Infinity;
   // PDFs get a higher size limit since they're inherently bigger
   const PDF_LIMIT = Math.max(maxBytes, 32 * 1024 * 1024); // 32 MB for PDFs
 
@@ -63,7 +64,7 @@ export async function readFiles(fileList, maxBytes = Infinity, onSkipped) {
           skipped.push({ name: f.name, reason: `excede limite de PDF (${formatSize(PDF_LIMIT)})` });
           continue;
         }
-        const extracted = await extractPdfFile(f);
+        const extracted = await extractPdfFile(f, { ocr: opts.ocr });
         if (extracted) result.push(extracted);
       } else if (isTextFile(f.name)) {
         if (f.size > maxBytes) {

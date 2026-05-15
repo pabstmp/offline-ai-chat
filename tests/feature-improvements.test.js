@@ -71,6 +71,24 @@ import {
   shouldAutoScroll,
   getScrollPosition,
 } from "../modules/app-helpers.js";
+import {
+  buildComparisonPayloads,
+  groupModelsByServer,
+  resolveServerForModel,
+  buildConversationFromComparison,
+} from "../modules/ui/comparison-helpers.js";
+
+import {
+  extractDelta,
+  extractAssistantContent,
+  extractReasoningContent,
+  extractToolCalls,
+  extractFinishReason,
+} from "../modules/api.js";
+
+import {
+  mergeMissing,
+} from "../modules/schema.js";
 
 // ═════════════════════════════════════════════════════════════════════════════
 // R1 — Backup
@@ -609,6 +627,216 @@ assert(getBodyOverflowForModal(true, "auto") === "hidden", "open: overrides prev
 assert(getBodyOverflowForModal(false, "") === "", "closed: restores empty overflow");
 assert(getBodyOverflowForModal(false, "auto") === "auto", "closed: restores auto overflow");
 assert(getBodyOverflowForModal(false, "scroll") === "scroll", "closed: restores scroll overflow");
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R10 — Model Comparison
+// ═════════════════════════════════════════════════════════════════════════════
+
+section("R10 — Comparison: buildComparisonPayloads");
+
+runProperty(
+  "Property 18: payloads share content and differ only in model",
+  fc.property(
+    fc.record({
+      prompt: fc.string(),
+      modelA: fc.string(),
+      modelB: fc.string(),
+      profile: fc.record({ systemPrompt: fc.string() }),
+      samplingOverride: fc.record({ temperature: fc.float(), max_tokens: fc.integer() }),
+    }),
+    (opts) => {
+      const { payloadA, payloadB } = buildComparisonPayloads(opts);
+      if (JSON.stringify(payloadA.messages) !== JSON.stringify(payloadB.messages)) return false;
+      if (payloadA.model !== opts.modelA || payloadB.model !== opts.modelB) return false;
+      if (payloadA.temperature !== opts.samplingOverride.temperature) return false;
+      return true;
+    }
+  )
+);
+
+section("R10 — Comparison: groupModelsByServer");
+
+runProperty(
+  "Property 19: model grouping is complete and correct",
+  fc.property(
+    fc.array(fc.string({ minLength: 1 }), { minLength: 0, maxLength: 20 }),
+    fc.array(fc.record({ id: fc.string({ minLength: 1 }), nickname: fc.string() }), { minLength: 1, maxLength: 5 }),
+    (models, servers) => {
+      const mapping = new Map();
+      models.forEach(m => mapping.set(m, servers[Math.floor(Math.random() * servers.length)].id));
+      
+      const groups = groupModelsByServer(models, servers, mapping);
+      const groupedModels = groups.flatMap(g => g.models);
+      
+      // All models accounted for
+      if (groupedModels.length !== models.length) return false;
+      // No extra models
+      for (const m of groupedModels) if (!models.includes(m)) return false;
+      return true;
+    }
+  )
+);
+
+section("R10 — Comparison: resolveServerForModel");
+
+runProperty(
+  "Property 20: server resolution is deterministic and matches mapping",
+  fc.property(
+    fc.string({ minLength: 1 }),
+    fc.array(fc.record({ id: fc.string({ minLength: 1 }), nickname: fc.string() }), { minLength: 1, maxLength: 5 }),
+    (modelId, servers) => {
+      const mapping = new Map([[modelId, servers[0].id]]);
+      const res1 = resolveServerForModel(modelId, servers, mapping);
+      const res2 = resolveServerForModel(modelId, servers, mapping);
+      return res1 === res2 && res1.id === servers[0].id;
+    }
+  )
+);
+
+section("R10 — Comparison: buildConversationFromComparison");
+
+runProperty(
+  "Property 21: created conversation has correct structure",
+  fc.property(
+    fc.record({
+      prompt: fc.string(),
+      response: fc.string(),
+      model: fc.string(),
+      profileId: fc.string(),
+      serverId: fc.string(),
+    }),
+    (opts) => {
+      const conv = buildConversationFromComparison(opts);
+      if (conv.messages.length !== 2) return false;
+      if (conv.messages[0].role !== "user" || conv.messages[0].content !== opts.prompt) return false;
+      if (conv.messages[1].role !== "assistant" || conv.messages[1].content !== opts.response) return false;
+      if (conv.model !== opts.model) return false;
+      return true;
+    }
+  )
+);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R-Review — api.js extractDelta robustness (CODE_REVIEW nit)
+// ═════════════════════════════════════════════════════════════════════════════
+
+section("R-Review — api.js: extractDelta tolera chunks malformados");
+
+// Estes não devem lançar, e devem retornar shape { content, reasoning } com strings.
+assert(
+  (() => { const d = extractDelta({}); return d.content === "" && d.reasoning === ""; })(),
+  "extractDelta({}) retorna strings vazias"
+);
+assert(
+  (() => { const d = extractDelta(null); return d.content === "" && d.reasoning === ""; })(),
+  "extractDelta(null) retorna strings vazias sem throw"
+);
+assert(
+  (() => { const d = extractDelta({ choices: [] }); return d.content === "" && d.reasoning === ""; })(),
+  "extractDelta com choices vazio"
+);
+assert(
+  (() => { const d = extractDelta({ choices: [{ delta: null }] }); return d.content === "" && d.reasoning === ""; })(),
+  "extractDelta com delta=null"
+);
+assert(
+  (() => { const d = extractDelta({ choices: [{ delta: { content: "olá" } }] }); return d.content === "olá"; })(),
+  "extractDelta extrai delta.content"
+);
+assert(
+  (() => { const d = extractDelta({ choices: [{ message: { reasoning_content: "pensando" } }] }); return d.reasoning === "pensando"; })(),
+  "extractDelta extrai reasoning_content de message"
+);
+assert(
+  extractFinishReason({ choices: [{ finish_reason: "stop" }] }) === "stop",
+  "extractFinishReason extrai stop"
+);
+assert(
+  extractFinishReason(null) === null,
+  "extractFinishReason(null) retorna null"
+);
+assert(
+  extractToolCalls({ choices: [{ message: { tool_calls: [{ id: "x" }] } }] })?.[0]?.id === "x",
+  "extractToolCalls extrai array"
+);
+assert(
+  extractToolCalls({ choices: [{ message: {} }] }) === null,
+  "extractToolCalls retorna null quando ausente"
+);
+
+runProperty(
+  "Property R-Review-1: extractDelta nunca lança em objetos arbitrários",
+  fc.property(fc.anything(), (any) => {
+    try {
+      const d = extractDelta(any);
+      return typeof d.content === "string" && typeof d.reasoning === "string";
+    } catch {
+      return false;
+    }
+  })
+);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R-Review — schema.js mergeMissing (deep merge defensivo)
+// ═════════════════════════════════════════════════════════════════════════════
+
+section("R-Review — schema.js: mergeMissing");
+
+assert(
+  (() => {
+    const t = { a: 1 };
+    mergeMissing(t, { a: 99, b: 2 });
+    return t.a === 1 && t.b === 2;
+  })(),
+  "mergeMissing preserva valor existente, adiciona o ausente"
+);
+assert(
+  (() => {
+    const t = { rag: { enabled: true } };
+    mergeMissing(t, { rag: { enabled: false, topK: 10 } });
+    return t.rag.enabled === true && t.rag.topK === 10;
+  })(),
+  "mergeMissing é recursivo em objetos aninhados"
+);
+assert(
+  (() => {
+    const t = { arr: [1, 2] };
+    mergeMissing(t, { arr: [9, 9, 9] });
+    return t.arr.length === 2 && t.arr[0] === 1;
+  })(),
+  "mergeMissing trata arrays como atômicos (não faz merge item-a-item)"
+);
+assert(
+  (() => {
+    const t = { x: null };
+    mergeMissing(t, { x: { nested: 1 } });
+    return t.x === null;
+  })(),
+  "mergeMissing não sobrescreve null explícito do usuário"
+);
+assert(
+  (() => {
+    const t = {};
+    mergeMissing(t, { deep: { a: { b: { c: 42 } } } });
+    return t.deep.a.b.c === 42;
+  })(),
+  "mergeMissing clona objeto novo profundamente (não compartilha ref)"
+);
+
+runProperty(
+  "Property R-Review-2: mergeMissing nunca remove chaves existentes",
+  fc.property(
+    fc.dictionary(fc.string({ minLength: 1, maxLength: 8 }), fc.integer()),
+    fc.dictionary(fc.string({ minLength: 1, maxLength: 8 }), fc.integer()),
+    (target, source) => {
+      const t = { ...target };
+      const beforeKeys = new Set(Object.keys(t));
+      mergeMissing(t, source);
+      for (const k of beforeKeys) if (!(k in t)) return false;
+      return true;
+    }
+  )
+);
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Summary

@@ -17,6 +17,14 @@ services:
       # Para LM Studio em outra maquina, adicione o host:porta aqui:
       # ALLOWED_LM_HOSTS: localhost,host.docker.internal:1234,192.168.1.50:1234
       # WORKSPACE_ROOTS: /workspace
+      #
+      # Web search (tool builtin web_search):
+      # - Default: DuckDuckGo HTML scrape (zero config, sujeito a rate limit).
+      # - Opcional: Brave Search API (free 2000/mês, sem anti-bot). Crie
+      #   uma chave em https://api.search.brave.com/app e descomente:
+      # BRAVE_SEARCH_API_KEY: "BSA_seu_token_aqui"
+      # O usuário também pode configurar a chave via UI em
+      # Configurações → Avançado → Busca web (preferida sobre o env).
     ports:
       - "127.0.0.1:8080:8080"
     # Bind mount the host filesystem read-only so server.js can read files

@@ -86,6 +86,34 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 12000 }) {
   }
 }
 
+/* Cap de buffer SSE: linha sem `\n` maior que 1 MiB é hostil (servidor
+   adversário ou modelo em loop). Aborta a leitura em vez de inflar memória. */
+const SSE_MAX_BUFFER_BYTES = 1 << 20;
+
+/* Acumula tool_calls de deltas SSE em curso. OpenAI emite tool_calls fragmentados
+   por `index`: o primeiro chunk traz `id`/`function.name`, os seguintes só trazem
+   pedaços de `function.arguments` (JSON sendo construído em streaming). */
+function mergeToolCallDelta(acc, deltaToolCalls) {
+  if (!Array.isArray(deltaToolCalls)) return;
+  for (const tc of deltaToolCalls) {
+    const idx = typeof tc.index === "number" ? tc.index : acc.length;
+    if (!acc[idx]) {
+      acc[idx] = {
+        id: tc.id || "",
+        type: tc.type || "function",
+        function: { name: "", arguments: "" },
+      };
+    }
+    const target = acc[idx];
+    if (tc.id) target.id = tc.id;
+    if (tc.type) target.type = tc.type;
+    if (tc.function) {
+      if (tc.function.name) target.function.name += tc.function.name;
+      if (tc.function.arguments) target.function.arguments += tc.function.arguments;
+    }
+  }
+}
+
 export async function readStream(response, onDelta) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8");
@@ -94,34 +122,52 @@ export async function readStream(response, onDelta) {
   let reasoning = "";
   let usage = null;
   let finishReason = null;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith(":") || !trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (payload === "[DONE]") return { content, reasoning, usage, finishReason };
-      try {
-        const parsed = JSON.parse(payload);
-        const d = extractDelta(parsed);
-        if (d.content) content += d.content;
-        if (d.reasoning) reasoning += d.reasoning;
-        // Capture finish_reason from last chunk (LM Studio sends it in the choice)
-        const fr = parsed?.choices?.[0]?.finish_reason;
-        if (fr) finishReason = fr;
-        // Capture usage if present (some servers include it in the final chunk)
-        if (parsed?.usage) usage = parsed.usage;
-        if (d.content || d.reasoning) {
-          onDelta(d, { content, reasoning });
+  const toolCallsAcc = [];
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > SSE_MAX_BUFFER_BYTES) {
+        throw new Error("SSE buffer overflow (linha sem \\n excedeu 1 MiB).");
+      }
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(":") || !trimmed.startsWith("data:")) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === "[DONE]") {
+          const toolCalls = toolCallsAcc.length ? toolCallsAcc.filter(Boolean) : null;
+          return { content, reasoning, usage, finishReason, toolCalls };
         }
-      } catch { /* ignore keep-alive */ }
+        try {
+          const parsed = JSON.parse(payload);
+          const d = extractDelta(parsed);
+          if (d.content) content += d.content;
+          if (d.reasoning) reasoning += d.reasoning;
+          // tool_calls vêm em delta.tool_calls (streaming) ou message.tool_calls (final).
+          const dTc = parsed?.choices?.[0]?.delta?.tool_calls
+                   || parsed?.choices?.[0]?.message?.tool_calls;
+          if (dTc) mergeToolCallDelta(toolCallsAcc, dTc);
+          // Capture finish_reason from last chunk (LM Studio sends it in the choice)
+          const fr = parsed?.choices?.[0]?.finish_reason;
+          if (fr) finishReason = fr;
+          // Capture usage if present (some servers include it in the final chunk)
+          if (parsed?.usage) usage = parsed.usage;
+          if (d.content || d.reasoning) {
+            onDelta(d, { content, reasoning });
+          }
+        } catch { /* ignore keep-alive */ }
+      }
     }
+    const toolCalls = toolCallsAcc.length ? toolCallsAcc.filter(Boolean) : null;
+    return { content, reasoning, usage, finishReason, toolCalls };
+  } finally {
+    // Garantir release do reader em qualquer caminho (abort, throw, overflow).
+    // Sem isso o ReadableStream fica locked indefinidamente.
+    try { await reader.cancel(); } catch {}
   }
-  return { content, reasoning, usage, finishReason };
 }
 
 export async function requestCompletion({ baseUrl, apiKey, payload, signal }, onDelta) {
@@ -139,6 +185,7 @@ export async function requestCompletion({ baseUrl, apiKey, payload, signal }, on
     reasoning: extractReasoningContent(data),
     usage: data?.usage || null,
     finishReason: data?.choices?.[0]?.finish_reason || null,
+    toolCalls: extractToolCalls(data),
   };
 }
 
@@ -227,3 +274,23 @@ export function buildSamplingPayload(sampling) {
   }
   return out;
 }
+
+/**
+ * Extrai tool_calls. Aceita tanto resposta completa do OpenAI
+ * (`choices[0].message.tool_calls`) quanto o shape devolvido por `readStream`
+ * (`{ toolCalls: [...] }`), pra que o caller possa usar uma única função
+ * indiferente ao modo (streaming ou não).
+ */
+export function extractToolCalls(data) {
+  if (!data) return null;
+  if (Array.isArray(data.toolCalls) && data.toolCalls.length) return data.toolCalls;
+  return data?.choices?.[0]?.message?.tool_calls || null;
+}
+
+/**
+ * Extrai finish_reason do objeto choice.
+ */
+export function extractFinishReason(data) {
+  return data?.choices?.[0]?.finish_reason || null;
+}
+

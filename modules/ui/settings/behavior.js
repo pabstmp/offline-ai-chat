@@ -1,4 +1,5 @@
 import { state, section, field, input, select, checkbox, card, button } from "./_shared.js";
+import { isSupported as notificationsSupported, isBlocked as notificationsBlocked, requestNotificationPermission } from "../../notifications.js";
 
 /* ---------- pure functions (exported for testing) ---------- */
 
@@ -39,6 +40,40 @@ export function panelBehavior() {
   })()));
   c.appendChild(checkbox("Persistir conversas em localStorage/IndexedDB", b.persistConversations, (v) => { b.persistConversations = v; onChange(); }));
   c.appendChild(checkbox("Confirmar antes de excluir", b.confirmOnDelete, (v) => { b.confirmOnDelete = v; onChange(); }));
+
+  // Notifications checkbox
+  if (notificationsSupported()) {
+    const blocked = notificationsBlocked();
+    const notifPref = b.notifications || "disabled";
+    const notifCb = checkbox(
+      "Notificar quando o modelo terminar de responder",
+      notifPref === "enabled" && !blocked,
+      async (v) => {
+        if (v) {
+          const result = await requestNotificationPermission();
+          if (result !== "granted") {
+            // Revert checkbox
+            const inp = notifCb.querySelector("input");
+            if (inp) inp.checked = false;
+            return;
+          }
+          b.notifications = "enabled";
+        } else {
+          b.notifications = "disabled";
+        }
+        onChange();
+      }
+    );
+    if (blocked) {
+      const inp = notifCb.querySelector("input");
+      if (inp) inp.disabled = true;
+      const hint = document.createElement("p");
+      hint.className = "field-hint";
+      hint.textContent = "Notificações bloqueadas pelo navegador. Altere nas configurações do browser para reativar.";
+      notifCb.appendChild(hint);
+    }
+    c.appendChild(notifCb);
+  }
 
   sec.appendChild(c);
   elements.settingsBody.appendChild(sec);

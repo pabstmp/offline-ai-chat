@@ -2,6 +2,7 @@
    suggestions overlay, send/stop button management. */
 
 import { estimateTokens } from "../markdown.js";
+import { openPromptPicker } from "./prompt-picker.js";
 
 /* ---------- pure functions (re-exported from composer-helpers.js for testability) ---------- */
 export { validateImageSize, buildImageMessageContent } from "./composer-helpers.js";
@@ -69,9 +70,101 @@ export function initComposer(opts) {
 
   // Add image upload button after attachButton
   addImageUploadButton();
+  addPromptPickerButton();
+
+  // Image drag-drop on composer area
+  initComposerDropZone();
+}
+
+/* ---------- composer image drop zone ---------- */
+
+function initComposerDropZone() {
+  const frame = elements.chatForm.querySelector(".composer-frame") || elements.chatForm;
+  let dragCounter = 0;
+
+  frame.addEventListener("dragenter", (e) => {
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    dragCounter++;
+    frame.classList.add("drop-active");
+  });
+
+  frame.addEventListener("dragover", (e) => {
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+
+  frame.addEventListener("dragleave", (e) => {
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      frame.classList.remove("drop-active");
+    }
+  });
+
+  frame.addEventListener("drop", (e) => {
+    dragCounter = 0;
+    frame.classList.remove("drop-active");
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const file = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith("image/"));
+    if (file) handleImageFile(file);
+  });
+}
+
+function hasImageFile(e) {
+  if (e.dataTransfer?.types?.includes("Files")) {
+    // Check items if available
+    const items = e.dataTransfer.items;
+    if (items) {
+      for (const item of items) {
+        if (item.kind === "file" && item.type.startsWith("image/")) return true;
+      }
+    }
+    return true; // can't determine type on dragenter, assume yes
+  }
+  return false;
 }
 
 /* ---------- image upload ---------- */
+
+function addPromptPickerButton() {
+  if (!elements.attachButton) return;
+  if (document.getElementById("promptPickerButton")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "promptPickerButton";
+  btn.type = "button";
+  btn.className = "icon-button";
+  btn.style.width = "28px";
+  btn.style.height = "28px";
+  btn.setAttribute("aria-label", "Biblioteca de Prompts (Ctrl+Shift+P)");
+  btn.title = "Biblioteca de Prompts (Ctrl+Shift+P)";
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>`;
+
+  btn.addEventListener("click", () => {
+    openPromptPicker(store, (text) => {
+      insertPromptText(text);
+    });
+  });
+
+  elements.attachButton.insertAdjacentElement("afterend", btn);
+}
+
+export function insertPromptText(text) {
+  const ta = elements.promptInput;
+  if (ta.value.trim()) {
+    ta.value += "\n" + text;
+  } else {
+    ta.value = text;
+  }
+  ta.focus();
+  lastLength = -1;
+  autoResize();
+  updateTokenCount();
+}
 
 function addImageUploadButton() {
   if (!elements.attachButton) return;

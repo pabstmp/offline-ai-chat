@@ -60,6 +60,174 @@ export function scrollToBottom() {
   forceScrollToBottom();
 }
 
+/**
+ * Renderiza (ou atualiza in-place) um bloco de chamada de ferramenta.
+ *
+ * Quando chamado sem `existingBlock`, cria um novo <details> com loading e
+ * retorna a referência. Em uma segunda chamada com `existingBlock` (mesmo
+ * <details>) e um `result`, troca o estado "Executando..." pelo resultado sem
+ * recriar o bloco. Caller (app.js runToolCycle) usa esse ciclo para evitar
+ * duplicação visual de tool calls.
+ */
+export function renderToolCallBlock(body, toolCall, result = null, existingBlock = null) {
+  if (existingBlock && result !== null) {
+    return updateToolCallBlock(existingBlock, result);
+  }
+
+  const details = document.createElement("details");
+  details.className = "tool-block";
+
+  const summary = document.createElement("summary");
+  summary.className = "tool-summary";
+  // Texto curto baseado no nome da tool — fica discreto na bolha do assistant.
+  const toolName = toolCall.function.name;
+  const icon = toolName === "web_search" ? "🔍"
+            : toolName === "run_javascript" ? "🧮"
+            : toolName === "get_current_datetime" ? "🕒"
+            : "🔧";
+  const label = toolName === "web_search" ? "Buscou na web"
+              : toolName === "run_javascript" ? "Executou código"
+              : toolName === "get_current_datetime" ? "Consultou data/hora"
+              : "Ferramenta";
+  const summaryCode = document.createElement("code");
+  summaryCode.textContent = toolName;
+  summaryCode.style.marginLeft = "6px";
+  summary.append(`${icon} ${label}`, summaryCode);
+  details.appendChild(summary);
+
+  const content = document.createElement("div");
+  content.className = "tool-content";
+
+  const argsHeader = document.createElement("div");
+  argsHeader.className = "tool-section-label";
+  argsHeader.textContent = "Argumentos:";
+  content.appendChild(argsHeader);
+
+  const argsPre = document.createElement("pre");
+  argsPre.className = "tool-args";
+  try {
+    const parsed = JSON.parse(toolCall.function.arguments || "{}");
+    argsPre.textContent = JSON.stringify(parsed, null, 2);
+  } catch {
+    argsPre.textContent = toolCall.function.arguments || "";
+  }
+  content.appendChild(argsPre);
+
+  if (result !== null) {
+    appendToolResult(content, result);
+  } else {
+    const loading = document.createElement("div");
+    loading.className = "tool-loading";
+    loading.textContent = "⚙ Executando...";
+    content.appendChild(loading);
+  }
+
+  details.appendChild(content);
+  body.appendChild(details);
+  scrollToBottom();
+  return details;
+}
+
+function appendToolResult(contentEl, result) {
+  const resHeader = document.createElement("div");
+  resHeader.className = "tool-section-label tool-section-result";
+  resHeader.textContent = "Resultado:";
+  resHeader.style.marginTop = "var(--s-2)";
+  contentEl.appendChild(resHeader);
+
+  // === Sucesso de web_search: `__WEB_SEARCH_OK__:<provider>:<payload>` ===
+  // Mostra os resultados em <pre> + chip discreto indicando qual provider
+  // respondeu ("via Brave" verde, "via DuckDuckGo" cinza).
+  if (typeof result === "string" && result.startsWith("__WEB_SEARCH_OK__:")) {
+    const rest = result.slice("__WEB_SEARCH_OK__:".length);
+    const colon = rest.indexOf(":");
+    const provider = colon > 0 ? rest.slice(0, colon) : "unknown";
+    const payload = colon > 0 ? rest.slice(colon + 1) : rest;
+
+    const chip = document.createElement("span");
+    chip.className = `tool-provider-chip provider-${provider}`;
+    chip.textContent = provider === "brave" ? "via Brave"
+                     : provider === "duckduckgo" ? "via DuckDuckGo"
+                     : `via ${provider}`;
+    resHeader.appendChild(chip);
+
+    const resPre = document.createElement("pre");
+    resPre.className = "tool-result";
+    resPre.textContent = payload;
+    contentEl.appendChild(resPre);
+    return;
+  }
+
+  // === Erro de web_search: `__WEB_SEARCH_ERROR__:<code>:<braveStatus>:<msg>` ===
+  // Renderiza caixa amarela com CTA contextual. braveStatus diz se o user
+  // já configurou chave (texto do botão muda).
+  if (typeof result === "string" && result.startsWith("__WEB_SEARCH_ERROR__:")) {
+    const parts = result.slice("__WEB_SEARCH_ERROR__:".length).split(":");
+    const code = parts.shift() || "unknown";
+    const braveStatus = parts.shift() || "nao-configurada";
+    const message = parts.join(":");
+
+    const wrap = document.createElement("div");
+    wrap.className = "tool-result tool-result-error";
+
+    const msg = document.createElement("div");
+    msg.className = "tool-error-message";
+    msg.textContent = message;
+    wrap.appendChild(msg);
+
+    // Pra os erros que o usuário pode resolver via config, ação clara.
+    if (code === "anti-bot" || code === "rate-limit" || code === "auth") {
+      const action = document.createElement("button");
+      action.type = "button";
+      action.className = "btn btn-sm btn-primary tool-error-cta";
+      action.style.marginTop = "var(--s-2)";
+      action.textContent = code === "auth"
+        ? "Conferir chave em Configurações"
+        : braveStatus === "configurada"
+          ? "Conferir chave em Configurações"
+          : "Configurar busca confiável";
+      action.addEventListener("click", () => {
+        document.dispatchEvent(new CustomEvent("open-settings", { detail: { tab: "advanced", anchor: "advanced-search-section" } }));
+      });
+      wrap.appendChild(action);
+    }
+    contentEl.appendChild(wrap);
+    return;
+  }
+
+  const resPre = document.createElement("pre");
+  resPre.className = "tool-result";
+  resPre.textContent = result;
+  contentEl.appendChild(resPre);
+}
+
+function updateToolCallBlock(details, result) {
+  const content = details.querySelector(".tool-content");
+  if (!content) return details;
+  const loading = content.querySelector(".tool-loading");
+  if (loading) loading.remove();
+  // Se já existe um resultado (chamada duplicada), substitui em vez de empilhar.
+  const oldHeader = content.querySelector(".tool-section-result");
+  const oldResult = content.querySelector(".tool-result");
+  if (oldHeader) oldHeader.remove();
+  if (oldResult) oldResult.remove();
+  appendToolResult(content, result);
+  scrollToBottom();
+  return details;
+}
+
+/**
+ * Mostra indicador de que ferramentas estão sendo processadas.
+ */
+export function showToolProgress(body) {
+  const div = document.createElement("div");
+  div.className = "tool-progress-info";
+  div.innerHTML = '<span class="typing-sm"></span> Processando ferramentas...';
+  body.appendChild(div);
+  scrollToBottom();
+}
+
+
 function forceScrollToBottom() {
   if (scrollPending) return;
   scrollPending = true;
@@ -70,6 +238,13 @@ function forceScrollToBottom() {
 }
 
 export function renderMessage(message, options = {}) {
+  // Tool role messages são protocolo OpenAI (resultado da execução voltando pro
+  // modelo). O usuário já vê o resultado dentro do tool block da mensagem do
+  // assistant que invocou a tool — exibir como bolha separada de "Ferramenta"
+  // duplica e polui. Mantemos no histórico (necessário pro modelo) mas não
+  // renderizamos visualmente.
+  if (message.role === "tool") return { node: null, body: null };
+
   const node = document.createElement("article");
   node.className = `msg msg-${message.role}`;
   if (options.noAnim) node.classList.add("no-anim");
@@ -86,7 +261,10 @@ export function renderMessage(message, options = {}) {
   meta.className = "msg-meta";
   const role = document.createElement("span");
   role.className = "msg-role";
-  role.textContent = message.role === "user" ? "Você" : "Assistente";
+  let roleLabel = "Assistente";
+  if (message.role === "user") roleLabel = "Você";
+  else if (message.role === "tool") roleLabel = "Ferramenta";
+  role.textContent = roleLabel;
   meta.appendChild(role);
   if (message.ts) {
     const time = document.createElement("time");
@@ -102,7 +280,14 @@ export function renderMessage(message, options = {}) {
     body.innerHTML =
       '<span class="typing"><span></span><span></span><span></span></span>';
   } else {
-    setBodyContent(body, message.content || "", message.role === "assistant" && options.streaming);
+    setBodyContent(
+      body,
+      message.content || "",
+      message.role === "assistant" && options.streaming,
+      message.reasoning || "",
+      message.tool_calls,
+      options.toolResults || null,
+    );
   }
 
   const actions = document.createElement("div");
@@ -163,6 +348,14 @@ function openRegenMenu(e, anchor, message, node, body) {
   menu.style.zIndex = "20";
   menu.style.minWidth = "220px";
 
+  const closeMenu = () => {
+    menu.remove();
+    document.removeEventListener("click", onDocClick, true);
+  };
+  const onDocClick = (ev) => {
+    if (!menu.contains(ev.target)) closeMenu();
+  };
+
   for (const [act, label] of [
     ["regen", "Regenerar (mesmo perfil)"],
     ["ab-start", "Comparar com outro perfil"],
@@ -174,7 +367,9 @@ function openRegenMenu(e, anchor, message, node, body) {
     b.style.textAlign = "left";
     b.textContent = label;
     b.addEventListener("click", () => {
-      menu.remove();
+      // Fechar antes de despachar a ação garante que o listener no document
+      // não fica órfão (bug anterior: o listener só removia em clicks fora).
+      closeMenu();
       onAction({ action: act, messageId: message.id, node, body, message });
     });
     menu.appendChild(b);
@@ -185,13 +380,7 @@ function openRegenMenu(e, anchor, message, node, body) {
   menu.style.top = `${rect.bottom + 4}px`;
   document.body.appendChild(menu);
 
-  const close = (ev) => {
-    if (!menu.contains(ev.target)) {
-      menu.remove();
-      document.removeEventListener("click", close, true);
-    }
-  };
-  setTimeout(() => document.addEventListener("click", close, true), 0);
+  setTimeout(() => document.addEventListener("click", onDocClick, true), 0);
 }
 
 /* ---------- inline editor ---------- */
@@ -244,15 +433,25 @@ function openInlineEditor(node, body, message) {
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); closeInlineEditor(true); }
   });
 
-  // Live markdown preview
+  // Live markdown preview com debounce — re-parsear o texto inteiro a cada
+  // keystroke causa jank visível em mensagens grandes. 120ms é suficiente para
+  // não atrapalhar quem digita continuamente.
+  let previewTimer = null;
   textarea.addEventListener("input", () => {
-    preview.replaceChildren(renderMarkdown(textarea.value));
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(() => {
+      preview.replaceChildren(renderMarkdown(textarea.value));
+    }, 120);
   });
 
   // Replace body content with editor
   body.replaceChildren(editorWrap);
 
-  activeEditor = { node, body, originalContent, originalReasoning, textarea, messageId: message.id, message };
+  activeEditor = {
+    node, body, originalContent, originalReasoning, textarea,
+    messageId: message.id, message,
+    cleanup: () => clearTimeout(previewTimer),
+  };
 
   // Focus after DOM insertion
   requestAnimationFrame(() => textarea.focus());
@@ -260,8 +459,9 @@ function openInlineEditor(node, body, message) {
 
 function closeInlineEditor(save) {
   if (!activeEditor) return;
-  const { body, originalContent, originalReasoning, textarea, messageId, message } = activeEditor;
+  const { body, originalContent, originalReasoning, textarea, messageId, message, cleanup } = activeEditor;
   activeEditor = null;
+  cleanup?.();
 
   if (save) {
     const newContent = textarea.value;
@@ -279,11 +479,20 @@ function closeInlineEditor(save) {
 
 /* Set body content: streaming uses raw <pre>, finalized uses markdown render.
    Optional reasoning is rendered as a collapsible "thinking" block above content.
+   Optional tool_calls are rendered as collapsible blocks above content; quando
+   há `toolResults` (Map<tool_call_id, content>), cada bloco já abre com o
+   resultado renderizado (não fica "⚙ Executando..." pra sempre no histórico).
    Content can be a string or an OpenAI-compatible array (for image messages). */
-export function setBodyContent(body, content, streaming = false, reasoning = "") {
+export function setBodyContent(body, content, streaming = false, reasoning = "", tool_calls = null, toolResults = null) {
   body.replaceChildren();
   if (reasoning) {
     body.appendChild(buildReasoningBlock(reasoning, streaming));
+  }
+  if (tool_calls && Array.isArray(tool_calls)) {
+    tool_calls.forEach(tc => {
+      const result = toolResults && tc?.id ? toolResults.get(tc.id) : null;
+      renderToolCallBlock(body, tc, result || null);
+    });
   }
   // Handle array content (image messages)
   if (Array.isArray(content)) {
@@ -385,12 +594,17 @@ export function finalizeAssistant(body, content, isError = false, reasoning = ""
     body.replaceChildren(document.createTextNode(content));
   } else {
     body.classList.remove("msg-error");
+    // Preservar tool blocks já renderizados durante runToolCycle — sem isso
+    // o usuário vê o resultado da tool durante streaming e perde quando o
+    // assistant finaliza (o body é reconstruído do zero).
+    const toolBlocks = [...body.querySelectorAll(":scope > .tool-block")];
     body.replaceChildren();
     if (reasoning) {
       const block = buildReasoningBlock(reasoning, false);
       block.open = false; // collapse after streaming finishes
       body.appendChild(block);
     }
+    for (const tb of toolBlocks) body.appendChild(tb);
     if (content) body.appendChild(renderMarkdown(content));
     if (meta?.usage || meta?.finishReason || meta?.elapsed) {
       body.appendChild(buildStatsLine(meta));
@@ -432,7 +646,61 @@ export function clearMessages() {
 }
 export function renderAllMessages(messages) {
   clearMessages();
-  for (const m of messages) renderMessage(m, { noAnim: true });
+  // Pre-build map de tool_call_id → result string olhando o histórico inteiro.
+  const toolResults = new Map();
+  for (const m of messages) {
+    if (m && m.role === "tool" && m.tool_call_id) {
+      // Prefere `_display` (com markers para UI rica) sobre `content` (versão
+      // limpa enviada ao LLM). Veja stripWebSearchMarker em app.js.
+      toolResults.set(m.tool_call_id, m._display || m.content || "");
+    }
+  }
+
+  // Mescla [assistant(tool_calls, content=vazio) → tool → assistant(content)]
+  // em UMA bolha visual. O protocolo OpenAI requer mensagens separadas (o
+  // histórico salvo mantém isso pro LLM), mas pro usuário é uma única "rodada"
+  // do assistente — duas bolhas iguais com timestamps iguais é ruído.
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m) continue;
+    if (m.role === "tool") continue; // tool messages: protocolo interno, hidden
+
+    if (
+      m.role === "assistant" &&
+      Array.isArray(m.tool_calls) &&
+      m.tool_calls.length > 0 &&
+      !(m.content || "").trim()
+    ) {
+      // Acumular todas as tool_calls dessa cadeia até achar o assistant final.
+      const allToolCalls = [...m.tool_calls];
+      let j = i + 1;
+      let final = m;
+      while (j < messages.length) {
+        const next = messages[j];
+        if (!next) { j++; continue; }
+        if (next.role === "tool") { j++; continue; }
+        if (
+          next.role === "assistant" &&
+          Array.isArray(next.tool_calls) &&
+          next.tool_calls.length > 0 &&
+          !(next.content || "").trim()
+        ) {
+          allToolCalls.push(...next.tool_calls);
+          j++;
+          continue;
+        }
+        final = next;
+        break;
+      }
+      const merged = { ...final, tool_calls: allToolCalls };
+      renderMessage(merged, { noAnim: true, toolResults });
+      // Pula para depois do final encontrado (j aponta pra ele, queremos j+1).
+      i = j;
+      continue;
+    }
+
+    renderMessage(m, { noAnim: true, toolResults });
+  }
 }
 
 export function removeMessageNode(node) {

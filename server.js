@@ -33,6 +33,13 @@ const ALLOWED_LM_HOSTS = parseCsvEnv("ALLOWED_LM_HOSTS").map((s) => s.toLowerCas
 
 const WORKSPACE_ROOTS = parseCsvEnv("WORKSPACE_ROOTS");
 
+/* Web search: DDG (default, sem config) com opção de Brave API key.
+   A chave do Brave pode vir do env (BRAVE_SEARCH_API_KEY) OU do localStorage
+   do client via campo `apiKey` no body da request — o server prefere a do
+   client. Mantém UX: zero-config funciona com DDG, e o usuário power-user
+   cola a key em Settings → Avançado sem mexer em env vars. */
+const BRAVE_SEARCH_API_KEY_ENV = (process.env.BRAVE_SEARCH_API_KEY || "").trim();
+
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
   ".gif": "image/gif",
@@ -86,11 +93,19 @@ const STATIC_ASSET_EXTENSIONS = new Set([
 const SECURITY_HEADERS = {
   "Content-Security-Policy": [
     "default-src 'self'",
+    // script-src estrito: sem 'unsafe-inline'. O registro do service worker
+    // (único inline anterior) foi movido para app.js. Necessario `blob:` aqui
+    // porque o tool sandbox cria <iframe srcdoc=...> com <script> inline; o
+    // srcdoc herda a CSP do parent, então precisamos permitir scripts inline
+    // controlados pelo sandbox iframe. Como o iframe está em origem opaca
+    // (sandbox sem allow-same-origin), o script inline ali não tem acesso ao
+    // localStorage/cookies do parent.
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "connect-src 'self'",
     "worker-src 'self'",
+    "frame-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
@@ -383,6 +398,9 @@ async function handleApi(request, response, pathname) {
         upstreamPath: "/embeddings",
       });
       return;
+    }
+    if (pathname === "/api/tools/web-search") {
+      return handleToolsWebSearch(body, response, request);
     }
     if (pathname === "/api/lm/models-info") {
       // LM Studio extended API — list with state + max_ctx + loaded_ctx + arch
@@ -1095,6 +1113,11 @@ function startServer() {
       console.log("LM hosts permitidos: apenas loopback (configure ALLOWED_LM_HOSTS para liberar outros).");
     } else {
       console.log("LM hosts permitidos: qualquer host (modo local).");
+      console.warn(
+        "AVISO: ALLOWED_LM_HOSTS vazio em modo local — qualquer baseUrl recebido pelo " +
+        "proxy /api/chat/completions sera aceito. Apps locais malignos (extensoes, processos) " +
+        "podem usar este servidor como pivot SSRF. Configure ALLOWED_LM_HOSTS=localhost para restringir."
+      );
     }
     if (WORKSPACE_ROOTS.length) {
       console.log(`Workspace: whitelist ativa - ${WORKSPACE_ROOTS.join(", ")}`);
@@ -1103,7 +1126,302 @@ function startServer() {
     } else {
       console.log("Workspace: bloqueado ate configurar WORKSPACE_ROOTS (seguro para LAN)");
     }
+    const braveCfg = BRAVE_SEARCH_API_KEY_ENV
+      ? "brave (via env) -> duckduckgo (fallback)"
+      : "duckduckgo (default) — client pode enviar Brave key opcionalmente";
+    console.log(`Web search: ${braveCfg}`);
   });
+}
+
+/**
+ * Ferramenta de busca na web.
+ *
+ * Estratégia:
+ *   1. Se houver Brave API key (do body do client OU do env) → tenta Brave.
+ *      Brave tem JSON limpo, free tier 2000/mês, sem anti-bot. É o caminho
+ *      "user-friendly mais confiável".
+ *   2. Senão (ou se Brave falhar) → cai pro DuckDuckGo HTML scrape (zero
+ *      config, mas DDG bloqueia IPs ocasionalmente).
+ *
+ * Hardening:
+ * - Rate limit por IP (mesmo bucket dos endpoints /api/fs/*)
+ * - Timeout de 10s
+ * - URLs validam scheme http/https
+ * - Retorna `{ results, provider }` indicando qual backend respondeu
+ * - Em caso de falha, retorna `errorCode` semântico ("anti-bot", "no-results",
+ *   "network", "auth") pra UI poder oferecer ação contextual.
+ */
+async function handleToolsWebSearch(body, response, request) {
+  if (request && rateLimited(request)) {
+    return sendJson(response, 429, { error: "Muitas buscas, aguarde.", errorCode: "rate-limit" });
+  }
+  const query = typeof body.query === "string" ? body.query.trim() : "";
+  if (!query) return sendJson(response, 400, { error: "query obrigatória", errorCode: "bad-request" });
+  if (query.length > 500) return sendJson(response, 400, { error: "query excede 500 caracteres", errorCode: "bad-request" });
+
+  // Prefere a key vinda do client (Settings → Avançado). Fallback para env.
+  const braveKey = (typeof body.braveApiKey === "string" && body.braveApiKey.trim())
+    || BRAVE_SEARCH_API_KEY_ENV
+    || "";
+
+  const errors = [];
+  if (braveKey) {
+    try {
+      const results = await fetchBraveResults(query, braveKey);
+      if (results.length) {
+        return sendJson(response, 200, { results, provider: "brave" });
+      }
+      errors.push("brave: sem resultados");
+    } catch (err) {
+      console.error("[Search/brave] Fail:", err.message);
+      errors.push(`brave: ${err.message}`);
+      // Se a key é inválida, não cai pro DDG (usuário precisa ver isso).
+      if (err.code === "auth") {
+        return sendJson(response, 401, {
+          error: `Brave API key inválida ou expirada: ${err.message}`,
+          errorCode: "auth",
+        });
+      }
+    }
+  }
+
+  try {
+    const results = await fetchDuckDuckGoResults(query);
+    return sendJson(response, 200, { results, provider: "duckduckgo" });
+  } catch (err) {
+    console.error("[Search/ddg] Fail:", err.message);
+    errors.push(`duckduckgo: ${err.message}`);
+    return sendJson(response, 502, {
+      error: errors.join(" | "),
+      errorCode: err.code || "network",
+    });
+  }
+}
+
+/* Brave Search API — JSON limpo, free tier 2000/mês.
+   Docs: https://api.search.brave.com/app/documentation/web-search/get-started */
+function fetchBraveResults(query, apiKey) {
+  return new Promise((resolve, reject) => {
+    const path = `/res/v1/web/search?q=${encodeURIComponent(query)}&count=5`;
+    const req = https.request(
+      {
+        method: "GET",
+        hostname: "api.search.brave.com",
+        path,
+        headers: {
+          "Accept": "application/json",
+          "Accept-Encoding": "identity",
+          "X-Subscription-Token": apiKey,
+        },
+      },
+      (res) => {
+        const status = res.statusCode;
+        if (status !== 200) {
+          res.resume();
+          const err = new Error(`Brave retornou HTTP ${status}.`);
+          if (status === 401 || status === 403) err.code = "auth";
+          else if (status === 429) err.code = "rate-limit";
+          reject(err);
+          return;
+        }
+        let raw = "";
+        let bytes = 0;
+        const MAX_BYTES = 2 * 1024 * 1024;
+        res.on("data", (c) => {
+          bytes += c.length;
+          if (bytes > MAX_BYTES) {
+            req.destroy(new Error("Brave: resposta excedeu 2 MiB."));
+            return;
+          }
+          raw += c;
+        });
+        res.on("end", () => {
+          try {
+            const data = JSON.parse(raw);
+            const items = data?.web?.results || [];
+            const results = [];
+            for (const it of items.slice(0, 5)) {
+              const url = safeHttpUrl(it.url);
+              if (!url) continue;
+              results.push({
+                title: stripHtml(it.title || ""),
+                url,
+                snippet: stripHtml(it.description || ""),
+              });
+            }
+            resolve(results);
+          } catch (err) {
+            reject(new Error(`Brave: parse falhou (${err.message})`));
+          }
+        });
+      }
+    );
+    req.setTimeout(10_000, () => req.destroy(new Error("Timeout Brave (10s).")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function safeHttpUrl(raw) {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const u = new URL(raw);
+    return (u.protocol === "http:" || u.protocol === "https:") ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function stripHtml(s) {
+  return String(s).replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+}
+
+/* Wrapper com retry inteligente:
+   - Erros de rede/timeout: 1 retry após 3s (ajuda com blips transitórios)
+   - HTTP 202 / anti-bot: NÃO faz retry (DDG ainda vai bloquear, só atrasa o erro)
+   - Sem resultados: NÃO faz retry (mais buscas não vão criar resultados) */
+async function fetchDuckDuckGoResults(query) {
+  try {
+    return await fetchDuckDuckGoOnce(query);
+  } catch (err) {
+    if (err.code === "anti-bot" || err.code === "no-results") throw err;
+    // Network/timeout — espera 3s e tenta uma vez mais.
+    await new Promise((r) => setTimeout(r, 3000));
+    return fetchDuckDuckGoOnce(query);
+  }
+}
+
+function fetchDuckDuckGoOnce(query) {
+  return new Promise((resolve, reject) => {
+    const body = `q=${encodeURIComponent(query)}`;
+    const req = https.request(
+      {
+        method: "POST",
+        hostname: "html.duckduckgo.com",
+        path: "/html/",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.5",
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        const status = res.statusCode;
+        if (status !== 200) {
+          res.resume(); // drain to free socket
+          if (status === 202) {
+            const e = new Error(
+              "DuckDuckGo bloqueou temporariamente este IP (anti-bot). " +
+              "Aguarde alguns minutos e tente novamente, ou configure uma chave Brave Search em Configurações → Avançado."
+            );
+            e.code = "anti-bot";
+            reject(e);
+          } else {
+            const e = new Error(`DuckDuckGo retornou HTTP ${status}.`);
+            e.code = "network";
+            reject(e);
+          }
+          return;
+        }
+        let html = "";
+        let bytes = 0;
+        const MAX_HTML = 2 * 1024 * 1024; // 2 MiB de HTML é mais que suficiente
+        res.on("data", (c) => {
+          bytes += c.length;
+          if (bytes > MAX_HTML) {
+            req.destroy(new Error("Resposta DDG excedeu 2 MiB."));
+            return;
+          }
+          html += c;
+        });
+        res.on("end", () => {
+          // Mesmo com HTTP 200, DDG pode mandar a página de challenge (anomaly).
+          if (html.includes("anomaly.js") || html.includes("challenge-form")) {
+            const e = new Error(
+              "DuckDuckGo exigiu CAPTCHA (anti-bot). " +
+              "Aguarde alguns minutos ou configure uma chave Brave Search em Configurações → Avançado."
+            );
+            e.code = "anti-bot";
+            reject(e);
+            return;
+          }
+          try {
+            const results = parseDuckDuckGoHtml(html);
+            if (!results.length) {
+              const e = new Error("Nenhum resultado encontrado para esta query.");
+              e.code = "no-results";
+              reject(e);
+            } else {
+              resolve(results);
+            }
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+    );
+    req.setTimeout(10_000, () => {
+      req.destroy(new Error("Timeout DuckDuckGo (10s)."));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+/* Decodifica o redirect do DDG (/l/?uddg=...) e valida o scheme.
+   Retorna null se a URL não puder ser confiada (javascript:, data:, blob:, etc). */
+function safeExtractDdgUrl(rawHref) {
+  if (typeof rawHref !== "string" || !rawHref) return null;
+  try {
+    let u = new URL(rawHref, "https://duckduckgo.com");
+    if (u.host.endsWith("duckduckgo.com") && u.pathname === "/l/") {
+      const inner = u.searchParams.get("uddg");
+      if (inner) u = new URL(inner);
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+/* Parser do HTML do DDG. As classes deles mudam às vezes — atualmente cada
+   result vem como `<div class="result results_links ... web-result ">` contendo
+   `<a class="result__a">` (título), `result__url` (href) e
+   `<a/span class="result__snippet">` (descrição). Aceita classes extras antes/
+   depois do nome-alvo. */
+/* Parser do HTML do DDG. Splita por `result__body` (cada result vira um chunk
+   da posição atual até o próximo `result__body` ou fim do HTML), depois extrai
+   title/url/snippet de cada chunk. Mais robusto que tentar regex de bloco
+   fechado porque a marcação tem divs aninhadas que enganam `</div></div>`. */
+function parseDuckDuckGoHtml(html) {
+  const results = [];
+  // Posições onde cada result começa
+  const starts = [];
+  const re = /class="[^"]*\bresult__body\b/g;
+  let m;
+  while ((m = re.exec(html)) !== null) starts.push(m.index);
+  if (!starts.length) return results;
+  starts.push(html.length); // sentinela pro último chunk
+
+  for (let i = 0; i < starts.length - 1 && results.length < 5; i++) {
+    const chunk = html.slice(starts[i], starts[i + 1]);
+    const titleMatch = /<a[^>]*class="[^"]*\bresult__a\b[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/.exec(chunk);
+    if (!titleMatch) continue;
+    const url = safeExtractDdgUrl(titleMatch[1]);
+    if (!url) continue;
+    const title = titleMatch[2].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+    const snippetMatch = /<(?:a|span)[^>]*class="[^"]*\bresult__snippet\b[^"]*"[^>]*>([\s\S]*?)<\/(?:a|span)>/.exec(chunk);
+    const snippet = snippetMatch
+      ? snippetMatch[1].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim()
+      : "";
+    results.push({ title, url, snippet });
+  }
+
+  return results;
 }
 
 if (require.main === module) {

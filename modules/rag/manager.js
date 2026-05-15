@@ -5,6 +5,8 @@ import { indexSource } from "./indexer.js";
 import { embedQuery } from "./embedder.js";
 import { loadAllChunks, getSourceMeta, clearSource } from "./store.js";
 import { topK } from "./retriever.js";
+import * as reranker from "./reranker.js";
+import { toast } from "../ui/toasts.js";
 
 let activeJob = null; // { sourceId, abortController, lastProgress }
 const subscribers = new Set();
@@ -90,6 +92,8 @@ export async function retrieve({
   coverAllFiles = false,
   exhaustive = false,
   charBudget = 100000,
+  rerankConfig = null,
+  signal = null,
 }) {
   const meta = await getSourceMeta(sourceId);
   if (!meta) throw new Error("Fonte não indexada");
@@ -110,7 +114,7 @@ export async function retrieve({
         if (pa !== pb) return pa.localeCompare(pb);
         return (a.chunkIdx || 0) - (b.chunkIdx || 0);
       });
-      return sorted.map((c) => ({ ...c, score: 1, _reason: "exhaustive" }));
+      return { chunks: sorted.map((c) => ({ ...c, score: 1, _reason: "exhaustive" })), _rerankApplied: false };
     }
     // Doesn't fit → fall through to similarity-based retrieval with coverAllFiles.
   }
@@ -119,6 +123,46 @@ export async function retrieve({
     baseUrl: embedConfig.baseUrl,
     apiKey: embedConfig.apiKey,
     model: embedConfig.model,
+    signal,
   });
-  return topK(queryVec, chunks, k, { maxPerFile, includeFirstPerFile, coverAllFiles });
+  
+  const effectiveK = rerankConfig?.enabled && rerankConfig?.rerankModel ? (rerankConfig.candidateK || k * 3) : k;
+  
+  const candidates = topK(queryVec, chunks, effectiveK, { maxPerFile, includeFirstPerFile, coverAllFiles });
+  
+  if (rerankConfig?.enabled && rerankConfig?.rerankModel) {
+    try {
+      let chunksToRerank = candidates;
+      let preservedChunks = [];
+      if (coverAllFiles) {
+        chunksToRerank = candidates.filter(c => c._reason !== "all-files-coverage");
+        preservedChunks = candidates.filter(c => c._reason === "all-files-coverage");
+      }
+      
+      const reranked = await reranker.rerank({ 
+        query, 
+        chunks: chunksToRerank, 
+        config: rerankConfig, 
+        embedConfig, 
+        signal 
+      });
+      
+      const combined = [...preservedChunks, ...reranked];
+      // Note: preservedChunks are kept but we might need to sort them or just put them first
+      // Actually the spec says "aplicar o reranking apenas sobre os chunks que excedem a cota mínima... preservando pelo menos 1 chunk por arquivo no resultado final".
+      // We can sort combined again to put preserved at the top or just sort by rerankScore. Preserved chunks have rerankScore undefined, let's give them +Infinity.
+      combined.forEach(c => {
+        if (c._reason === "all-files-coverage") c.rerankScore = Infinity;
+      });
+      combined.sort((a, b) => (b.rerankScore || 0) - (a.rerankScore || 0));
+      
+      return { chunks: combined.slice(0, rerankConfig.finalK || k), _rerankApplied: true };
+    } catch (err) {
+      console.error('[RAG] Reranking falhou:', err.message);
+      toast(`Reranking falhou: ${err.message}. Usando ordem original.`, 'warn');
+      return { chunks: candidates.slice(0, rerankConfig.finalK || k), _rerankApplied: false };
+    }
+  }
+  
+  return { chunks: candidates, _rerankApplied: false };
 }

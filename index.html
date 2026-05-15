@@ -51,6 +51,10 @@
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </button>
 
+        <button id="compareToggle" class="icon-button" type="button" aria-label="Comparar modelos" title="Comparar modelos lado a lado">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="18" rx="1"/><rect x="14" y="3" width="7" height="18" rx="1"/></svg>
+        </button>
+
         <button id="paletteButton" class="icon-button" type="button" aria-label="Paleta de comandos" title="Paleta (Ctrl+K)">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </button>
@@ -105,6 +109,8 @@
             </div>
           </form>
         </main>
+
+        <div id="comparisonView" class="comparison-view hidden" role="region" aria-label="Comparação de modelos"></div>
       </div>
     </div>
 
@@ -130,12 +136,5 @@
     <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
 
     <script type="module" src="./app.js"></script>
-    <script>
-      if ("serviceWorker" in navigator) {
-        window.addEventListener("load", () => {
-          navigator.serviceWorker.register("/sw.js").catch(() => {});
-        });
-      }
-    </script>
   </body>
 </html>

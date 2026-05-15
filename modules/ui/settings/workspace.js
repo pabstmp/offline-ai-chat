@@ -369,7 +369,103 @@ function buildRagGlobalSection() {
   ragCard.appendChild(advanced);
 
   ragSec.appendChild(ragCard);
+  
+  ragSec.appendChild(buildRerankingSection());
+  
   return ragSec;
+}
+
+function buildRerankingSection() {
+  const { store, onChange } = state;
+  const ragCfg = store.get("rag");
+  const rCfg = ragCfg.reranking || {};
+
+  const card = document.createElement("div");
+  card.className = "drawer-card";
+  card.style.marginTop = "var(--s-3)";
+
+  const header = document.createElement("strong");
+  header.textContent = "Reranking (Cross-Encoder)";
+  header.style.display = "block";
+  header.style.marginBottom = "var(--s-2)";
+  card.appendChild(header);
+
+  card.appendChild(checkbox("Ativar reranking", !!rCfg.enabled, (v) => {
+    rCfg.enabled = v;
+    ragCfg.reranking = rCfg;
+    onChange();
+    state.rebuildPanel("workspace");
+  }));
+
+  if (rCfg.enabled) {
+    const body = document.createElement("div");
+    body.style.marginTop = "var(--s-3)";
+    body.style.display = "flex";
+    body.style.flexDirection = "column";
+    body.style.gap = "var(--s-3)";
+
+    body.appendChild(field("Modelo cross-encoder", input({
+      value: rCfg.rerankModel || "",
+      placeholder: "ex: cross-encoder/ms-marco-MiniLM-L-6-v2",
+      onchange: (e) => { rCfg.rerankModel = e.target.value.trim(); onChange(); },
+    })));
+
+    body.appendChild(field("Endpoint do reranker (opcional)", input({
+      value: rCfg.rerankEndpoint || "",
+      placeholder: "Padrão: mesmo servidor ativo",
+      onchange: (e) => { rCfg.rerankEndpoint = e.target.value.trim(); onChange(); },
+    })));
+
+    const sliderRow = (label, key, min, max, step) => {
+      const wrap = document.createElement("div");
+      wrap.className = "field";
+      const head = document.createElement("div");
+      head.className = "row";
+      head.style.gap = "var(--s-2)";
+      const lbl = document.createElement("label");
+      lbl.className = "field-label";
+      lbl.style.flex = "1";
+      lbl.textContent = label;
+      const val = document.createElement("span");
+      val.style.fontFamily = "var(--font-mono)";
+      val.style.fontSize = "var(--fs-xs)";
+      val.style.color = "var(--fg-2)";
+      val.textContent = String(rCfg[key]);
+      head.appendChild(lbl);
+      head.appendChild(val);
+      const slider = input({
+        type: "range", min: String(min), max: String(max), step: String(step), value: String(rCfg[key]),
+        oninput: (e) => {
+          rCfg[key] = Number(e.target.value);
+          val.textContent = String(rCfg[key]);
+          
+          if (rCfg.finalK > rCfg.candidateK) {
+            val.style.color = "var(--error)";
+            lbl.style.color = "var(--error)";
+          } else {
+            val.style.color = "var(--fg-2)";
+            lbl.style.color = "";
+            onChange();
+          }
+        },
+      });
+      wrap.appendChild(head);
+      wrap.appendChild(slider);
+      return wrap;
+    };
+
+    body.appendChild(sliderRow("Candidatos para reranking", "candidateK", 5, 50, 1));
+    body.appendChild(sliderRow("Chunks finais após reranking", "finalK", 1, 20, 1));
+
+    const note = document.createElement("p");
+    note.className = "field-help";
+    note.innerHTML = "O modelo cross-encoder deve estar carregado no LM Studio. Modelos de embedding não funcionam como cross-encoder.";
+    body.appendChild(note);
+
+    card.appendChild(body);
+  }
+
+  return card;
 }
 
 function buildRagSection(src) {

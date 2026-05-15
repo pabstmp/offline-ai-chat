@@ -1,5 +1,7 @@
 /* Sidebar: history list grouped by date, search, conversation actions. */
 
+import { buildIndex, searchIndex, findSnippets, updateIndex, removeFromIndex } from "../search.js";
+
 let elements = null;
 let store = null;
 let conversationStore = null;
@@ -9,6 +11,7 @@ let onAction = null;
 let allConversations = [];
 let activeId = null;
 let searchTerm = "";
+let searchIndex_ = new Map(); // inverted index for full-text search
 
 /* ---------- semantic search state ---------- */
 let conversationVectors = new Map(); // id → Float32Array
@@ -185,6 +188,8 @@ export async function refreshSidebar() {
   for (const id of conversationVectors.keys()) {
     if (!ids.has(id)) conversationVectors.delete(id);
   }
+  // Rebuild inverted index for full-text search
+  searchIndex_ = buildIndex(allConversations);
   renderList();
 }
 
@@ -203,14 +208,34 @@ export function closeSidebar() {
 }
 
 function renderList() {
-  const filtered = allConversations.filter((c) => {
-    if (!searchTerm) return true;
-    if (c.title?.toLowerCase().includes(searchTerm)) return true;
-    return c.messages?.some((m) => m.content?.toLowerCase().includes(searchTerm));
-  });
+  let filtered;
+  if (searchTerm && searchIndex_.size > 0) {
+    const allIds = allConversations.map((c) => c.id);
+    const matchIds = searchIndex(searchIndex_, searchTerm, allIds);
+    const matchSet = new Set(matchIds);
+    const idToConv = new Map(allConversations.map((c) => [c.id, c]));
+    filtered = matchIds.filter((id) => idToConv.has(id)).map((id) => idToConv.get(id));
+  } else if (searchTerm) {
+    filtered = allConversations.filter((c) => {
+      if (c.title?.toLowerCase().includes(searchTerm)) return true;
+      return c.messages?.some((m) => m.content?.toLowerCase().includes(searchTerm));
+    });
+  } else {
+    filtered = allConversations;
+  }
 
   const groups = groupByDate(filtered);
   elements.historyList.replaceChildren();
+
+  // Show search result count when searching
+  if (searchTerm && filtered.length > 0) {
+    const countLabel = document.createElement("li");
+    countLabel.className = "history-group-label";
+    countLabel.style.color = "var(--accent)";
+    countLabel.textContent = `${filtered.length} resultado(s)`;
+    elements.historyList.appendChild(countLabel);
+  }
+
   for (const [label, items] of groups) {
     if (!items.length) continue;
     const groupLabel = document.createElement("li");
@@ -218,7 +243,19 @@ function renderList() {
     groupLabel.textContent = label;
     elements.historyList.appendChild(groupLabel);
     for (const c of items) {
-      elements.historyList.appendChild(renderItem(c));
+      const li = renderItem(c);
+      // Show snippet when searching
+      if (searchTerm) {
+        const snippets = findSnippets(c, searchTerm, 1);
+        if (snippets.length) {
+          const snippetEl = document.createElement("div");
+          snippetEl.className = "history-item-snippet";
+          snippetEl.textContent = snippets[0].snippet;
+          const contentCol = li.querySelector(".history-item-content");
+          if (contentCol) contentCol.appendChild(snippetEl);
+        }
+      }
+      elements.historyList.appendChild(li);
     }
   }
   if (!filtered.length) {
@@ -245,7 +282,11 @@ function renderItem(conv) {
   menu.innerHTML =
     '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="6" r="1"></circle><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="18" r="1"></circle></svg>';
 
-  item.appendChild(title);
+  const contentCol = document.createElement("div");
+  contentCol.className = "history-item-content";
+  contentCol.appendChild(title);
+
+  item.appendChild(contentCol);
   item.appendChild(menu);
 
   item.addEventListener("click", (e) => {
@@ -348,6 +389,7 @@ function openMenu(conv, anchor, titleEl) {
     ["save-template", "Salvar como template"],
     ["export-json", "Exportar JSON"],
     ["export-md", "Exportar Markdown"],
+    ["export-html", "Exportar HTML"],
     ["delete", "Excluir"],
   ]) {
     const b = document.createElement("button");

@@ -3,7 +3,7 @@
    - network-only for /api/* (LM Studio proxy + fs endpoints)
    - bump CACHE_VERSION to invalidate old caches */
 
-const CACHE_VERSION = "v16";
+const CACHE_VERSION = "v22";
 const CACHE_NAME = `offline-ai-shell-${CACHE_VERSION}`;
 const SHELL_URLS = [
   "/",
@@ -18,8 +18,18 @@ const SHELL_URLS = [
   "/modules/markdown.js",
   "/modules/theme.js",
   "/modules/shortcuts.js",
+  "/modules/exporter.js",
+  "/modules/notifications.js",
+  "/modules/search.js",
+  "/modules/templates.js",
+  "/modules/app-helpers.js",
   "/modules/ui/chat.js",
+  "/modules/ui/chat-helpers.js",
+  "/modules/ui/comparison.js",
+  "/modules/ui/comparison-helpers.js",
   "/modules/ui/composer.js",
+  "/modules/ui/composer-helpers.js",
+  "/modules/ui/prompt-picker.js",
   "/modules/ui/settings.js",
   "/modules/ui/settings/_shared.js",
   "/modules/ui/settings/index.js",
@@ -31,6 +41,7 @@ const SHELL_URLS = [
   "/modules/ui/settings/behavior.js",
   "/modules/ui/settings/shortcuts.js",
   "/modules/ui/settings/advanced.js",
+  "/modules/ui/settings/tools.js",
   "/modules/ui/palette.js",
   "/modules/ui/sidebar.js",
   "/modules/ui/toasts.js",
@@ -44,8 +55,10 @@ const SHELL_URLS = [
   "/modules/rag/embedder.js",
   "/modules/rag/store.js",
   "/modules/rag/retriever.js",
+  "/modules/rag/reranker.js",
   "/modules/rag/indexer.js",
   "/modules/rag/manager.js",
+  "/modules/tools/manager.js",
   "/modules/hardware.js",
   "/modules/model-catalog.js",
 ];

@@ -14,7 +14,7 @@ export function shouldIgnore(name, patterns) {
   return false;
 }
 
-export function bindDragDrop({ container, ignorePatterns, maxFileBytes, maxTotalBytes, onFiles, onProgress }) {
+export function bindDragDrop({ container, ignorePatterns, maxFileBytes, maxTotalBytes, ocr, onFiles, onProgress }) {
   let dragCounter = 0;
   const overlay = document.createElement("div");
   overlay.style.position = "fixed";
@@ -69,6 +69,7 @@ export function bindDragDrop({ container, ignorePatterns, maxFileBytes, maxTotal
         ignorePatterns,
         maxFileBytes,
         maxTotalBytes,
+        ocr,
         currentTotal: () => totalBytes,
         addBytes: (b) => { totalBytes += b; },
         onProgress,
@@ -93,7 +94,7 @@ async function walkEntry(entry, prefix, collected, opts) {
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       let item;
       if (isPdfFile(entry.name)) {
-        const extracted = await extractPdfFile(file);
+        const extracted = await extractPdfFile(file, { ocr: opts.ocr });
         if (!extracted) return;
         item = { ...extracted, path: rel };
       } else {

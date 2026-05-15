@@ -19,15 +19,20 @@ export function topK(queryVec, chunks, k = 5, opts = {}) {
   const includeFirstPerFile = !!opts.includeFirstPerFile;
   const coverAllFiles = !!opts.coverAllFiles;
 
-  // Score all chunks
-  const scored = new Array(chunks.length);
+  // Score chunks. Chunks com dim mismatch são descartados em vez de receberem
+  // score=-1: se o índice inteiro estiver com dim errado (cenário: troca de
+  // embedder sem re-indexar), o top-K não deve retornar lixo. O manager.js já
+  // valida embeddingModel antes — isto é defesa em profundidade.
+  const scored = [];
+  let droppedDim = 0;
   for (let i = 0; i < chunks.length; i++) {
     const c = chunks[i];
-    if (!c.vec || c.vec.length !== dim) {
-      scored[i] = { ...c, score: -1 };
-      continue;
-    }
-    scored[i] = { ...c, score: dot(queryVec, c.vec) };
+    if (!c.vec || c.vec.length !== dim) { droppedDim++; continue; }
+    scored.push({ ...c, score: dot(queryVec, c.vec) });
+  }
+  if (droppedDim && droppedDim === chunks.length) {
+    // Todos chunks têm dim diferente da query — provavelmente embeddingModel mudou.
+    return [];
   }
   scored.sort((a, b) => b.score - a.score);
 
@@ -137,7 +142,15 @@ export function topK(queryVec, chunks, k = 5, opts = {}) {
   return result;
 }
 
-/* Dot product of two equal-length Float32Array */
+/* Dot product of two equal-length Float32Array.
+ *
+ * TODO (escala): para datasets >5k chunks com 2560 dim (Qwen3), este loop puro
+ * leva 50-150ms na thread principal e dá jank durante streaming. Caminhos
+ * possíveis (todos zero-deps):
+ *   1) Web Worker dedicado pra `topK()` — desbloqueia UI, custo: serializar Float32Array.
+ *   2) Loop unroll 4x ou Math.fround(); V8 já otimiza bem, ganho marginal.
+ *   3) WebAssembly SIMD via blob (mais invasivo, ganho ~3-5x).
+ * Por enquanto este é o gargalo do roadmap RAG futuro. */
 export function dot(a, b) {
   let s = 0;
   const n = a.length;

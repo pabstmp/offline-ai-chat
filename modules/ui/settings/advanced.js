@@ -14,6 +14,35 @@ export function panelAdvanced() {
   sec.appendChild(c);
   elements.settingsBody.appendChild(sec);
 
+  // Busca web — só aparece se o usuário quiser mexer. Default é DDG sem config.
+  const searchSec = section("Busca web");
+  searchSec.id = "advanced-search-section";
+  const searchCard = document.createElement("div");
+  searchCard.className = "drawer-card";
+  const searchHelp = document.createElement("p");
+  searchHelp.className = "field-help";
+  searchHelp.innerHTML =
+    'A busca web (tool <code>web_search</code>) usa DuckDuckGo por padrão — funciona sem nenhuma configuração. ' +
+    'Se o DDG estiver bloqueando seu IP (anti-bot), cole abaixo uma chave gratuita do Brave Search ' +
+    '(<a href="https://api.search.brave.com/app/keys" target="_blank" rel="noopener">api.search.brave.com</a>, ' +
+    '2000 buscas/mês grátis, só precisa de email).';
+  searchCard.appendChild(searchHelp);
+
+  if (!adv.search) adv.search = { braveApiKey: "" };
+  const keyInput = input({
+    type: "password",
+    value: adv.search.braveApiKey || "",
+    placeholder: "BSA_xxxx (opcional — em branco usa DDG)",
+    style: "width: 100%; font-family: var(--font-mono);",
+    onchange: (e) => {
+      adv.search.braveApiKey = e.target.value.trim();
+      onChange();
+    },
+  });
+  searchCard.appendChild(keyInput);
+  searchSec.appendChild(searchCard);
+  elements.settingsBody.appendChild(searchSec);
+
   const slashSec = section("Slash commands");
   const slashHelp = document.createElement("p");
   slashHelp.className = "field-help";
@@ -49,37 +78,175 @@ export function panelAdvanced() {
   elements.settingsBody.appendChild(slashSec);
 
   const libSec = section("Prompt library");
-  for (const p of adv.promptLibrary) {
-    const row = document.createElement("div");
-    row.className = "drawer-card";
 
-    const head = document.createElement("div");
-    head.className = "row";
-    head.appendChild(input({ type: "text", value: p.id, placeholder: "id", style: "width: 100px; font-family: var(--font-mono);",
-      onchange: (e) => { p.id = e.target.value.trim(); onChange(); }
-    }));
-    head.appendChild(input({ type: "text", value: p.name, placeholder: "Nome", style: "flex: 1;",
-      onchange: (e) => { p.name = e.target.value; onChange(); }
-    }));
-    head.appendChild(button("×", "btn-danger", () => {
-      adv.promptLibrary = adv.promptLibrary.filter((x) => x !== p);
-      onChange();
-      rebuildPanel("advanced");
-    }));
-    row.appendChild(head);
+  // Search input
+  const searchRow = document.createElement("div");
+  searchRow.className = "row";
+  searchRow.style.marginBottom = "var(--s-3)";
+  const searchInput = input({ type: "text", placeholder: "Buscar prompts por nome, ID ou corpo...", style: "flex: 1;" });
+  searchRow.appendChild(searchInput);
+  libSec.appendChild(searchRow);
 
-    const body = document.createElement("textarea");
-    body.rows = 2;
-    body.value = p.body;
-    body.addEventListener("change", () => { p.body = body.value; onChange(); });
-    row.appendChild(body);
+  const listContainer = document.createElement("div");
+  libSec.appendChild(listContainer);
 
-    libSec.appendChild(row);
+  function renderPromptList() {
+    listContainer.replaceChildren();
+    const q = searchInput.value.trim().toLowerCase();
+    
+    let prompts = adv.promptLibrary;
+    if (q) {
+      prompts = prompts.filter(p => 
+        (p.name || "").toLowerCase().includes(q) ||
+        (p.id || "").toLowerCase().includes(q) ||
+        (p.body || "").toLowerCase().includes(q)
+      );
+    }
+    
+    if (prompts.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "field-help";
+      empty.textContent = q ? "Nenhum prompt encontrado" : "Nenhum prompt salvo.";
+      listContainer.appendChild(empty);
+    }
+
+    for (const p of prompts) {
+      const row = document.createElement("div");
+      row.className = "drawer-card";
+
+      const head = document.createElement("div");
+      head.className = "row";
+      
+      const idInput = input({ type: "text", value: p.id, placeholder: "id", style: "width: 100px; font-family: var(--font-mono);" });
+      idInput.addEventListener("change", (e) => {
+        const newId = e.target.value.trim();
+        if (adv.promptLibrary.some(x => x !== p && x.id === newId)) {
+          toast("ID já em uso", "error");
+          e.target.value = p.id;
+        } else {
+          p.id = newId;
+          onChange();
+        }
+      });
+      head.appendChild(idInput);
+
+      const nameInput = input({ type: "text", value: p.name, placeholder: "Nome", style: "flex: 1;" });
+      nameInput.addEventListener("change", (e) => {
+        const val = e.target.value.trim();
+        if (!val) {
+          toast("Nome obrigatório", "error");
+          e.target.value = p.name;
+        } else {
+          p.name = val;
+          onChange();
+        }
+      });
+      head.appendChild(nameInput);
+
+      head.appendChild(button("Duplicar", "btn-ghost", () => {
+        const copy = JSON.parse(JSON.stringify(p));
+        copy.id = `${p.id}-copy-${Date.now()}`;
+        copy.name = `${p.name} (cópia)`;
+        adv.promptLibrary.push(copy);
+        onChange();
+        renderPromptList();
+      }));
+
+      head.appendChild(button("×", "btn-danger", () => {
+        adv.promptLibrary = adv.promptLibrary.filter((x) => x !== p);
+        onChange();
+        renderPromptList();
+      }));
+      row.appendChild(head);
+
+      // Tags
+      const tagsRow = document.createElement("div");
+      tagsRow.className = "row";
+      tagsRow.style.alignItems = "center";
+      tagsRow.style.flexWrap = "wrap";
+      
+      if (!p.tags) p.tags = [];
+      p.tags.forEach(t => {
+        const tagEl = document.createElement("span");
+        tagEl.className = "rag-pill";
+        tagEl.style.fontSize = "var(--fs-xs)";
+        tagEl.textContent = t + " ×";
+        tagEl.style.cursor = "pointer";
+        tagEl.title = "Remover tag";
+        tagEl.addEventListener("click", () => {
+          p.tags = p.tags.filter(x => x !== t);
+          onChange();
+          renderPromptList();
+        });
+        tagsRow.appendChild(tagEl);
+      });
+      
+      const tagInput = input({ type: "text", placeholder: "+ tag", style: "width: 80px; padding: 2px 6px; font-size: var(--fs-xs);" });
+      tagInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === ",") {
+          e.preventDefault();
+          const val = tagInput.value.toLowerCase().replace(/\s+/g, "").trim();
+          if (val.length >= 2 && !p.tags.includes(val)) {
+            p.tags.push(val);
+            onChange();
+            renderPromptList();
+          }
+          tagInput.value = "";
+        }
+      });
+      tagsRow.appendChild(tagInput);
+      row.appendChild(tagsRow);
+
+      const body = document.createElement("textarea");
+      body.rows = 3;
+      body.value = p.body;
+      
+      const preview = document.createElement("div");
+      preview.className = "msg-reasoning-text";
+      preview.style.background = "var(--bg-1)";
+      preview.style.border = "1px solid var(--line)";
+      preview.style.borderRadius = "var(--r-md)";
+      preview.style.marginTop = "var(--s-2)";
+      preview.style.maxHeight = "100px";
+      preview.style.overflowY = "auto";
+      
+      const updatePreview = () => {
+        preview.textContent = body.value || "O corpo do prompt aparecerá aqui…";
+        if (!body.value) preview.style.color = "var(--fg-2)";
+        else preview.style.color = "var(--fg-1)";
+      };
+      updatePreview();
+
+      body.addEventListener("input", () => {
+        updatePreview();
+      });
+
+      body.addEventListener("change", () => {
+        const val = body.value.trim();
+        if (!val) {
+          toast("Corpo obrigatório", "error");
+          body.value = p.body;
+          updatePreview();
+        } else {
+          p.body = val;
+          onChange();
+        }
+      });
+      
+      row.appendChild(body);
+      row.appendChild(preview);
+
+      listContainer.appendChild(row);
+    }
   }
-  libSec.appendChild(button("+ Novo snippet", "btn-secondary", () => {
-    adv.promptLibrary.push({ id: `s-${Date.now()}`, name: "Novo", body: "", tags: [] });
+
+  searchInput.addEventListener("input", renderPromptList);
+  renderPromptList();
+
+  libSec.appendChild(button("+ Novo prompt", "btn-secondary", () => {
+    adv.promptLibrary.push({ id: `p-${Date.now()}`, name: "Novo Prompt", body: "Digite seu prompt aqui...", tags: [] });
     onChange();
-    rebuildPanel("advanced");
+    renderPromptList();
   }));
   elements.settingsBody.appendChild(libSec);
 
