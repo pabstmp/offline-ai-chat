@@ -180,6 +180,11 @@ button {
   color: inherit;
 }
 
+[hidden] {
+  display: none !important;
+}
+
+
 a {
   color: var(--accent-strong);
   text-decoration: none;
@@ -1247,7 +1252,7 @@ kbd {
   transform: translateX(-50%);
   z-index: 3;
   box-shadow: var(--shadow-2);
-  display: inline-flex !important;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
