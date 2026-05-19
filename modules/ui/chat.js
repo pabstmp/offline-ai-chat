@@ -30,22 +30,36 @@ let scrollPending = false;
 /* ---------- inline editor state ---------- */
 let activeEditor = null; // { node, body, originalContent, originalReasoning, textarea, messageId }
 
+export function updateScrollButton() {
+  if (!elements || !elements.scrollDownButton) return;
+  const hasMessages = elements.messagesInner && elements.messagesInner.children.length > 0;
+  const clientHeight = elements.messages.clientHeight;
+  if (!hasMessages || clientHeight === 0) {
+    scrollLocked = false;
+    elements.scrollDownButton.hidden = true;
+    return;
+  }
+  const isScrollable = elements.messages.scrollHeight > clientHeight;
+  const distance =
+    elements.messages.scrollHeight -
+    elements.messages.scrollTop -
+    clientHeight;
+  if (!isScrollable) {
+    scrollLocked = false;
+    elements.scrollDownButton.hidden = true;
+    return;
+  }
+  scrollLocked = distance > 64;
+  elements.scrollDownButton.hidden = !scrollLocked;
+}
+
 export function initChat(opts) {
   elements = opts.elements;
   state = opts.state;
   store = opts.store;
   onAction = opts.onAction || (() => {});
 
-  elements.messages.addEventListener("scroll", () => {
-    const distance =
-      elements.messages.scrollHeight -
-      elements.messages.scrollTop -
-      elements.messages.clientHeight;
-    scrollLocked = distance > 64;
-    if (elements.scrollDownButton) {
-      elements.scrollDownButton.hidden = !scrollLocked;
-    }
-  });
+  elements.messages.addEventListener("scroll", updateScrollButton);
 
   if (elements.scrollDownButton) {
     elements.scrollDownButton.addEventListener("click", () => {
@@ -53,6 +67,7 @@ export function initChat(opts) {
       forceScrollToBottom();
     });
   }
+  updateScrollButton();
 }
 
 export function scrollToBottom() {
@@ -234,6 +249,7 @@ function forceScrollToBottom() {
   requestAnimationFrame(() => {
     elements.messages.scrollTop = elements.messages.scrollHeight;
     scrollPending = false;
+    updateScrollButton();
   });
 }
 
@@ -325,6 +341,7 @@ export function renderMessage(message, options = {}) {
   node.appendChild(content);
   elements.messagesInner.appendChild(node);
   scrollToBottom();
+  updateScrollButton();
 
   return { node, body };
 }
@@ -611,6 +628,7 @@ export function finalizeAssistant(body, content, isError = false, reasoning = ""
     }
   }
   scrollToBottom();
+  updateScrollButton();
 }
 
 function buildStatsLine(meta) {
@@ -643,6 +661,7 @@ function buildStatsLine(meta) {
 
 export function clearMessages() {
   elements.messagesInner.replaceChildren();
+  updateScrollButton();
 }
 export function renderAllMessages(messages) {
   clearMessages();
@@ -701,6 +720,7 @@ export function renderAllMessages(messages) {
 
     renderMessage(m, { noAnim: true, toolResults });
   }
+  updateScrollButton();
 }
 
 export function removeMessageNode(node) {

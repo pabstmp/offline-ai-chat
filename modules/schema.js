@@ -135,143 +135,171 @@ export function defaultKeymap() {
   };
 }
 
+function connectionDefaults() {
+  return {
+    activeServerId: "default",
+    servers: [
+      {
+        id: "default",
+        nickname: "LM Studio local",
+        baseUrl: DEFAULT_BASE_URL,
+        apiKey: "",
+        headers: {},
+        timeoutMs: 60000,
+        retry: { count: 0, backoffMs: 1000 },
+      },
+    ],
+  };
+}
+
+function appearanceDefaults() {
+  return {
+    theme: "system",
+    accentColor: "#2563eb",
+    fontUI: "system",
+    fontMono: "system",
+    fontSize: 16,
+    density: "normal",
+    radius: 10,
+    ambientGlow: false,
+    zenMode: false,
+    reducedMotion: "auto",
+  };
+}
+
+function behaviorDefaults() {
+  return {
+    submitOn: "enter",
+    persistConversations: true,
+    confirmOnDelete: true,
+    notifications: "disabled",
+  };
+}
+
+function advancedDefaults() {
+  return {
+    streaming: true,
+    debugMode: false,
+    promptLibrary: [
+      { id: "explain", name: "Explicar", body: "Explique passo a passo:", tags: ["geral"] },
+      { id: "review", name: "Code review", body: "Revise este código procurando bugs e riscos:", tags: ["dev"] },
+    ],
+    slashCommands: [
+      { trigger: "/code", expansion: "Explique este código:" },
+      { trigger: "/fix", expansion: "Identifique problemas e proponha correções neste código:" },
+      { trigger: "/test", expansion: "Escreva testes unitários para:" },
+    ],
+    tools: {
+      requireConfirmation: false,
+    },
+    // Configuração da busca web. DDG é default (zero config). Para evitar
+    // os bloqueios anti-bot ocasionais do DDG, o usuário pode colar uma
+    // chave Brave Search API aqui (free 2000/mês em api.search.brave.com).
+    search: {
+      braveApiKey: "",
+    },
+  };
+}
+
+function toolsDefaults() {
+  return [
+    {
+      id: "builtin-get_current_datetime",
+      name: "get_current_datetime",
+      description: "Retorna a data e hora atual com timezone do browser no formato ISO 8601.",
+      parameters: { type: "object", properties: {}, required: [] },
+      implementation: "builtin:get_current_datetime",
+      enabled: false,
+      builtIn: true,
+    },
+    {
+      id: "builtin-web_search",
+      name: "web_search",
+      description: "Busca na web e retorna os primeiros resultados com título, URL e snippet.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Termo de busca" }
+        },
+        required: ["query"]
+      },
+      implementation: "builtin:web_search",
+      enabled: false,
+      builtIn: true,
+    },
+    {
+      id: "builtin-run_javascript",
+      name: "run_javascript",
+      description: "Executa código JavaScript e retorna o resultado. Sem acesso a DOM, fetch ou rede.",
+      parameters: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "Código JavaScript a executar" }
+        },
+        required: ["code"]
+      },
+      implementation: "builtin:run_javascript",
+      enabled: false,
+      builtIn: true,
+    },
+  ];
+}
+
+function workspaceDefaults() {
+  return {
+    sources: [],
+    activeSourceId: null,
+    ignorePatterns: ["node_modules", ".git", "dist", "build", ".next", ".cache", "*.lock", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.exe", "*.dll", "*.so", "*.bin"],
+    maxFileBytes: 256 * 1024,
+    maxTotalBytes: 4 * 1024 * 1024,
+    autoIncludeOpenFiles: false,
+    persistContext: false,
+    ocrEnabled: false,
+  };
+}
+
+function ragDefaults() {
+  return {
+    enabled: false,
+    // Qwen3-Embedding-4B: state-of-the-art multilingual (top-1 MTEB 2025),
+    // trata PT nativamente, 2560 dimensões, 32k context. Best for RAG sobre
+    // documentos em português ou bilíngues.
+    embeddingModel: "text-embedding-qwen3-embedding-4b",
+    // Auto-strategy: detecta automaticamente se a pergunta é comparativa,
+    // resumo ou pontual e ajusta topK/maxPerFile. O usuário não precisa pensar.
+    autoStrategy: true,
+    // Smaller chunks pra granularidade em PDFs com tabelas
+    chunkChars: 1500,
+    chunkOverlap: 250,
+    // topK e maxPerFile só são usados quando autoStrategy=false (modo manual)
+    topK: 10,
+    maxPerFile: 2,
+    batchSize: 32,
+    activeForNextMessage: true,
+    reranking: {
+      enabled: false,
+      rerankModel: "",
+      rerankEndpoint: "",
+      candidateK: 20,
+      finalK: 5,
+      rerankBatchSize: 8,
+    },
+  };
+}
+
 export function defaults() {
   return {
     schemaVersion: SCHEMA_VERSION,
-    connection: {
-      activeServerId: "default",
-      servers: [
-        {
-          id: "default",
-          nickname: "LM Studio local",
-          baseUrl: DEFAULT_BASE_URL,
-          apiKey: "",
-          headers: {},
-          timeoutMs: 60000,
-          retry: { count: 0, backoffMs: 1000 },
-        },
-      ],
-    },
-    appearance: {
-      theme: "system",
-      accentColor: "#2563eb",
-      fontUI: "system",
-      fontMono: "system",
-      fontSize: 16,
-      density: "normal",
-      radius: 10,
-      ambientGlow: false,
-      zenMode: false,
-      reducedMotion: "auto",
-    },
-    behavior: {
-      submitOn: "enter",
-      persistConversations: true,
-      confirmOnDelete: true,
-      notifications: "disabled",
-    },
+    connection: connectionDefaults(),
+    appearance: appearanceDefaults(),
+    behavior: behaviorDefaults(),
     activeProfileId: "personal",
     profiles: DEFAULT_PROFILES.map(cloneDefaultProfile),
     keymap: defaultKeymap(),
-    advanced: {
-      streaming: true,
-      debugMode: false,
-      promptLibrary: [
-        { id: "explain", name: "Explicar", body: "Explique passo a passo:", tags: ["geral"] },
-        { id: "review", name: "Code review", body: "Revise este código procurando bugs e riscos:", tags: ["dev"] },
-      ],
-      slashCommands: [
-        { trigger: "/code", expansion: "Explique este código:" },
-        { trigger: "/fix", expansion: "Identifique problemas e proponha correções neste código:" },
-        { trigger: "/test", expansion: "Escreva testes unitários para:" },
-      ],
-      tools: {
-        requireConfirmation: false,
-      },
-      // Configuração da busca web. DDG é default (zero config). Para evitar
-      // os bloqueios anti-bot ocasionais do DDG, o usuário pode colar uma
-      // chave Brave Search API aqui (free 2000/mês em api.search.brave.com).
-      search: {
-        braveApiKey: "",
-      },
-    },
-    tools: [
-      {
-        id: "builtin-get_current_datetime",
-        name: "get_current_datetime",
-        description: "Retorna a data e hora atual com timezone do browser no formato ISO 8601.",
-        parameters: { type: "object", properties: {}, required: [] },
-        implementation: "builtin:get_current_datetime",
-        enabled: false,
-        builtIn: true,
-      },
-      {
-        id: "builtin-web_search",
-        name: "web_search",
-        description: "Busca na web e retorna os primeiros resultados com título, URL e snippet.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string", description: "Termo de busca" }
-          },
-          required: ["query"]
-        },
-        implementation: "builtin:web_search",
-        enabled: false,
-        builtIn: true,
-      },
-      {
-        id: "builtin-run_javascript",
-        name: "run_javascript",
-        description: "Executa código JavaScript e retorna o resultado. Sem acesso a DOM, fetch ou rede.",
-        parameters: {
-          type: "object",
-          properties: {
-            code: { type: "string", description: "Código JavaScript a executar" }
-          },
-          required: ["code"]
-        },
-        implementation: "builtin:run_javascript",
-        enabled: false,
-        builtIn: true,
-      },
-    ],
-    workspace: {
-      sources: [],
-      activeSourceId: null,
-      ignorePatterns: ["node_modules", ".git", "dist", "build", ".next", ".cache", "*.lock", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.webp", "*.exe", "*.dll", "*.so", "*.bin"],
-      maxFileBytes: 256 * 1024,
-      maxTotalBytes: 4 * 1024 * 1024,
-      autoIncludeOpenFiles: false,
-      persistContext: false,
-      ocrEnabled: false,
-    },
-    rag: {
-      enabled: false,
-      // Qwen3-Embedding-4B: state-of-the-art multilingual (top-1 MTEB 2025),
-      // trata PT nativamente, 2560 dimensões, 32k context. Best for RAG sobre
-      // documentos em português ou bilíngues.
-      embeddingModel: "text-embedding-qwen3-embedding-4b",
-      // Auto-strategy: detecta automaticamente se a pergunta é comparativa,
-      // resumo ou pontual e ajusta topK/maxPerFile. O usuário não precisa pensar.
-      autoStrategy: true,
-      // Smaller chunks pra granularidade em PDFs com tabelas
-      chunkChars: 1500,
-      chunkOverlap: 250,
-      // topK e maxPerFile só são usados quando autoStrategy=false (modo manual)
-      topK: 10,
-      maxPerFile: 2,
-      batchSize: 32,
-      activeForNextMessage: true,
-      reranking: {
-        enabled: false,
-        rerankModel: "",
-        rerankEndpoint: "",
-        candidateK: 20,
-        finalK: 5,
-        rerankBatchSize: 8,
-      },
-    },
+    advanced: advancedDefaults(),
+    tools: toolsDefaults(),
+    workspace: workspaceDefaults(),
+    rag: ragDefaults(),
     hardwareOverride: null,
   };
 }

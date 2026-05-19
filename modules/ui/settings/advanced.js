@@ -17,8 +17,16 @@ export function panelAdvanced() {
   // Busca web — só aparece se o usuário quiser mexer. Default é DDG sem config.
   const searchSec = section("Busca web");
   searchSec.id = "advanced-search-section";
+
+  const searchDetails = document.createElement("details");
+  searchDetails.className = "advanced-settings-details";
+  const searchSummary = document.createElement("summary");
+  searchSummary.textContent = "Provedor de Busca (DuckDuckGo / Brave Search API)";
+  searchDetails.appendChild(searchSummary);
+
   const searchCard = document.createElement("div");
   searchCard.className = "drawer-card";
+  searchCard.style.marginTop = "var(--s-2)";
   const searchHelp = document.createElement("p");
   searchHelp.className = "field-help";
   searchHelp.innerHTML =
@@ -40,18 +48,30 @@ export function panelAdvanced() {
     },
   });
   searchCard.appendChild(keyInput);
-  searchSec.appendChild(searchCard);
+  searchDetails.appendChild(searchCard);
+  searchSec.appendChild(searchDetails);
   elements.settingsBody.appendChild(searchSec);
 
   const slashSec = section("Slash commands");
+
+  const slashDetails = document.createElement("details");
+  slashDetails.className = "advanced-settings-details";
+  const slashSummary = document.createElement("summary");
+  slashSummary.textContent = "Gerenciar atalhos de barra (Slash Commands)";
+  slashDetails.appendChild(slashSummary);
+
+  const slashBody = document.createElement("div");
+  slashBody.style.marginTop = "var(--s-2)";
+
   const slashHelp = document.createElement("p");
   slashHelp.className = "field-help";
   slashHelp.textContent = "Digite o trigger no início da mensagem (ou após uma quebra de linha) para abrir o autocompletar.";
-  slashSec.appendChild(slashHelp);
+  slashBody.appendChild(slashHelp);
 
   for (const sc of adv.slashCommands) {
     const row = document.createElement("div");
     row.className = "drawer-card";
+    row.style.marginBottom = "var(--s-2)";
     const inner = document.createElement("div");
     inner.className = "row";
     inner.appendChild(input({
@@ -68,16 +88,31 @@ export function panelAdvanced() {
       rebuildPanel("advanced");
     }));
     row.appendChild(inner);
-    slashSec.appendChild(row);
+    slashBody.appendChild(row);
   }
-  slashSec.appendChild(button("+ Novo slash command", "btn-secondary", () => {
+
+  const addSlashBtn = button("+ Novo slash command", "btn-secondary", () => {
     adv.slashCommands.push({ trigger: "/novo", expansion: "" });
     onChange();
     rebuildPanel("advanced");
-  }));
+  });
+  addSlashBtn.style.marginTop = "var(--s-2)";
+  slashBody.appendChild(addSlashBtn);
+
+  slashDetails.appendChild(slashBody);
+  slashSec.appendChild(slashDetails);
   elements.settingsBody.appendChild(slashSec);
 
   const libSec = section("Prompt library");
+
+  const libDetails = document.createElement("details");
+  libDetails.className = "advanced-settings-details";
+  const libSummary = document.createElement("summary");
+  libSummary.textContent = "Gerenciar biblioteca de prompts salvos";
+  libDetails.appendChild(libSummary);
+
+  const libBody = document.createElement("div");
+  libBody.style.marginTop = "var(--s-2)";
 
   // Search input
   const searchRow = document.createElement("div");
@@ -85,10 +120,10 @@ export function panelAdvanced() {
   searchRow.style.marginBottom = "var(--s-3)";
   const searchInput = input({ type: "text", placeholder: "Buscar prompts por nome, ID ou corpo...", style: "flex: 1;" });
   searchRow.appendChild(searchInput);
-  libSec.appendChild(searchRow);
+  libBody.appendChild(searchRow);
 
   const listContainer = document.createElement("div");
-  libSec.appendChild(listContainer);
+  libBody.appendChild(listContainer);
 
   function renderPromptList() {
     listContainer.replaceChildren();
@@ -113,6 +148,7 @@ export function panelAdvanced() {
     for (const p of prompts) {
       const row = document.createElement("div");
       row.className = "drawer-card";
+      row.style.marginBottom = "var(--s-3)";
 
       const head = document.createElement("div");
       head.className = "row";
@@ -243,11 +279,16 @@ export function panelAdvanced() {
   searchInput.addEventListener("input", renderPromptList);
   renderPromptList();
 
-  libSec.appendChild(button("+ Novo prompt", "btn-secondary", () => {
+  const addPromptBtn = button("+ Novo prompt", "btn-secondary", () => {
     adv.promptLibrary.push({ id: `p-${Date.now()}`, name: "Novo Prompt", body: "Digite seu prompt aqui...", tags: [] });
     onChange();
     renderPromptList();
-  }));
+  });
+  addPromptBtn.style.marginTop = "var(--s-2)";
+  libBody.appendChild(addPromptBtn);
+
+  libDetails.appendChild(libBody);
+  libSec.appendChild(libDetails);
   elements.settingsBody.appendChild(libSec);
 
   const ioSec = section("Backup");
@@ -282,16 +323,27 @@ export function panelAdvanced() {
 
   // Templates de conversa
   const tplSec = section("Templates de conversa");
+
+  const tplDetails = document.createElement("details");
+  tplDetails.className = "advanced-settings-details";
+  const tplSummary = document.createElement("summary");
+  tplSummary.textContent = "Gerenciar templates de contexto de conversa";
+  tplDetails.appendChild(tplSummary);
+
+  const tplBody = document.createElement("div");
+  tplBody.style.marginTop = "var(--s-2)";
+
   const tplHelp = document.createElement("p");
   tplHelp.className = "field-help";
   tplHelp.textContent = "Salve conversas como templates para reutilizar contextos frequentes. Use o menu ⋮ de uma conversa no histórico para salvar.";
-  tplSec.appendChild(tplHelp);
+  tplBody.appendChild(tplHelp);
 
   function renderTemplateList() {
-    const existing = tplSec.querySelector(".tpl-list");
+    const existing = tplBody.querySelector(".tpl-list");
     if (existing) existing.remove();
     const list = document.createElement("div");
     list.className = "tpl-list";
+    list.style.marginTop = "var(--s-2)";
     const templates = templateStore.list();
     if (!templates.length) {
       const empty = document.createElement("p");
@@ -305,6 +357,7 @@ export function panelAdvanced() {
         row.style.flexDirection = "row";
         row.style.alignItems = "center";
         row.style.gap = "var(--s-3)";
+        row.style.marginBottom = "var(--s-2)";
         const nameEl = document.createElement("span");
         nameEl.style.flex = "1";
         nameEl.style.fontWeight = "500";
@@ -324,9 +377,11 @@ export function panelAdvanced() {
         list.appendChild(row);
       }
     }
-    tplSec.appendChild(list);
+    tplBody.appendChild(list);
   }
 
   renderTemplateList();
+  tplDetails.appendChild(tplBody);
+  tplSec.appendChild(tplDetails);
   elements.settingsBody.appendChild(tplSec);
 }

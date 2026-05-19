@@ -154,6 +154,16 @@ export function topK(queryVec, chunks, k = 5, opts = {}) {
 export function dot(a, b) {
   let s = 0;
   const n = a.length;
-  for (let i = 0; i < n; i++) s += a[i] * b[i];
+  const limit = n - (n % 4);
+  let i = 0;
+  for (; i < limit; i += 4) {
+    s += a[i] * b[i] +
+         a[i + 1] * b[i + 1] +
+         a[i + 2] * b[i + 2] +
+         a[i + 3] * b[i + 3];
+  }
+  for (; i < n; i++) {
+    s += a[i] * b[i];
+  }
   return s;
 }

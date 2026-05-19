@@ -138,8 +138,15 @@ export function panelWorkspace() {
   elements.settingsBody.appendChild(sec);
 
   const limitsSec = section("Limites & filtros");
+  const limitsDetails = document.createElement("details");
+  limitsDetails.className = "advanced-settings-details";
+  const limitsSummary = document.createElement("summary");
+  limitsSummary.textContent = "Ajustar limites de tamanho e arquivos ignorados";
+  limitsDetails.appendChild(limitsSummary);
+
   const limitsCard = document.createElement("div");
   limitsCard.className = "drawer-card";
+  limitsCard.style.marginTop = "var(--s-2)";
 
   const row = document.createElement("div");
   row.className = "row cols2";
@@ -162,7 +169,8 @@ export function panelWorkspace() {
   });
   limitsCard.appendChild(field("Ignorar (um padrão por linha)", ignoreTa, "Aceita nomes exatos (node_modules) ou globs simples (*.png)."));
 
-  limitsSec.appendChild(limitsCard);
+  limitsDetails.appendChild(limitsCard);
+  limitsSec.appendChild(limitsDetails);
   elements.settingsBody.appendChild(limitsSec);
 }
 

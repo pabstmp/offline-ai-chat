@@ -7,6 +7,9 @@
     <title>Offline AI Chat</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' stop-color='%237c5cff'/%3E%3Cstop offset='100%25' stop-color='%232563eb'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='url(%23g)'/%3E%3Cpath d='M16 22h32v18a4 4 0 0 1-4 4H28l-8 6v-6h-4a4 4 0 0 1-4-4V22a0 0 0 0 1 4 0z' fill='none' stroke='white' stroke-width='3' stroke-linejoin='round'/%3E%3Ccircle cx='25' cy='32' r='2.5' fill='white'/%3E%3Ccircle cx='32' cy='32' r='2.5' fill='white'/%3E%3Ccircle cx='39' cy='32' r='2.5' fill='white'/%3E%3C/svg%3E" />
     <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="./styles.css" />
     <link rel="modulepreload" href="./modules/store.js" />
     <link rel="modulepreload" href="./modules/schema.js" />
@@ -22,8 +25,7 @@
         </button>
 
         <div class="topbar-brand">
-          <div class="topbar-mark" aria-hidden="true"></div>
-          <span>Offline AI</span>
+          <span style="font-family: 'Outfit', sans-serif; font-size: 1.25rem; font-weight: 500; letter-spacing: -0.02em;">Offline AI Chat</span>
         </div>
 
         <div class="topbar-spacer"></div>
@@ -78,33 +80,40 @@
         <main class="chat" role="main">
           <section id="messages" class="messages" aria-live="polite">
             <div id="emptyState" class="empty">
-              <div class="empty-mark" aria-hidden="true"></div>
-              <p class="empty-title">Pronto quando você estiver.</p>
+              <h1 class="empty-title">Por onde começamos?</h1>
               <div class="suggestions" aria-label="Sugestões">
                 <!-- chips rendered dynamically by app.js refreshSuggestionChips() -->
               </div>
             </div>
             <div id="messagesInner" class="messages-inner"></div>
           </section>
-          <button id="scrollDownButton" type="button" class="btn btn-secondary btn-sm scroll-down" hidden>↓ Novas mensagens</button>
+          <button id="scrollDownButton" type="button" class="btn btn-secondary btn-sm scroll-down" hidden>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
+            Novas mensagens
+          </button>
 
           <form id="chatForm" class="composer">
             <div id="contextPanel" class="composer-context hidden"></div>
 
             <div class="composer-frame">
-              <textarea id="promptInput" aria-label="Mensagem" placeholder="Digite sua mensagem..." rows="1"></textarea>
-              <div class="composer-bar">
-                <button id="attachButton" type="button" class="icon-button" aria-label="Anexar arquivo" title="Anexar (Ctrl+U)" style="width:28px;height:28px;">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+              <div class="composer-actions-left">
+                <button id="attachButton" type="button" class="icon-button" aria-label="Anexar arquivo" title="Anexar (Ctrl+U)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
                 </button>
+              </div>
+
+              <textarea id="promptInput" aria-label="Mensagem" placeholder="Peça ao Gemini..." rows="1"></textarea>
+
+              <div class="composer-actions-right">
                 <button id="ragPill" type="button" class="rag-pill hidden" title="Recuperação semântica RAG ativa">
                   <span class="rag-pill-dot"></span>
                   <span>RAG</span>
                 </button>
                 <span class="token-count" id="tokenCount">~0 tok</span>
-                <span class="spacer"></span>
                 <button id="stopButton" class="btn btn-ghost btn-sm" type="button" hidden>Parar</button>
-                <button id="sendButton" class="btn btn-primary btn-sm" type="submit">Enviar</button>
+                <button id="sendButton" type="submit" aria-label="Enviar" title="Enviar mensagem">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
               </div>
             </div>
           </form>

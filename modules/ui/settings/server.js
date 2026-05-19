@@ -50,8 +50,16 @@ export function panelServer() {
     })));
     c.appendChild(apiKeyForm);
 
+    const netDetails = document.createElement("details");
+    netDetails.className = "advanced-settings-details";
+    netDetails.style.width = "100%";
+    const netSummary = document.createElement("summary");
+    netSummary.textContent = "Conexão Avançada (Timeout / Retentativas)";
+    netDetails.appendChild(netSummary);
+
     const row = document.createElement("div");
     row.className = "row cols2";
+    row.style.marginTop = "var(--s-2)";
     row.appendChild(field("Timeout (ms)", input({
       type: "number", value: server.timeoutMs || 60000, min: "1000", step: "1000",
       onchange: (e) => { server.timeoutMs = Number(e.target.value); onChange(); },
@@ -64,7 +72,8 @@ export function panelServer() {
         onChange();
       },
     })));
-    c.appendChild(row);
+    netDetails.appendChild(row);
+    c.appendChild(netDetails);
 
     const actions = document.createElement("div");
     actions.className = "row";

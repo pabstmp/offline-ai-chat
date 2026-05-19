@@ -90,6 +90,11 @@ import {
   mergeMissing,
 } from "../modules/schema.js";
 
+import {
+  intentFromRegex,
+  makeStrategy,
+} from "../modules/rag/strategy.js";
+
 // ═════════════════════════════════════════════════════════════════════════════
 // R1 — Backup
 // ═════════════════════════════════════════════════════════════════════════════
@@ -648,7 +653,13 @@ runProperty(
       const { payloadA, payloadB } = buildComparisonPayloads(opts);
       if (JSON.stringify(payloadA.messages) !== JSON.stringify(payloadB.messages)) return false;
       if (payloadA.model !== opts.modelA || payloadB.model !== opts.modelB) return false;
-      if (payloadA.temperature !== opts.samplingOverride.temperature) return false;
+      const tempA = payloadA.temperature;
+      const expectedTemp = opts.samplingOverride.temperature;
+      if (Number.isNaN(tempA) && Number.isNaN(expectedTemp)) {
+        // both NaN, matches
+      } else if (tempA !== expectedTemp) {
+        return false;
+      }
       return true;
     }
   )
@@ -836,6 +847,50 @@ runProperty(
       return true;
     }
   )
+);
+
+// ═════════════════════════════════════════════════════════════════════════════
+// R-Opt — RAG Strategy
+// ═════════════════════════════════════════════════════════════════════════════
+
+section("R-Opt — RAG Strategy: makeStrategy");
+
+assert(
+  (() => {
+    const s = makeStrategy("comparative", 5, "test");
+    return s.mode === "comparative" && s.topK === 15 && s.includeFirstPerFile === true;
+  })(),
+  "makeStrategy comparative has topK based on fileCount"
+);
+
+assert(
+  (() => {
+    const s = makeStrategy("summary", 5, "test");
+    return s.mode === "summary" && s.topK === 8 && s.maxPerFile === 4;
+  })(),
+  "makeStrategy summary has static topK"
+);
+
+assert(
+  (() => {
+    const s = makeStrategy("point", 5, "test");
+    return s.mode === "point" && s.topK === 5 && s.maxPerFile === 2;
+  })(),
+  "makeStrategy point has static topK"
+);
+
+section("R-Opt — RAG Strategy: intentFromRegex");
+
+assert(intentFromRegex("compare as faturas de janeiro e fevereiro") === "comparative", "regex comparative match");
+assert(intentFromRegex("resuma o relatorio de sustentabilidade") === "summary", "regex summary match");
+assert(intentFromRegex("qual o valor da taxa de servico?") === null, "regex point is null (unsure)");
+
+runProperty(
+  "Property R-Opt-1: intentFromRegex returns comparative, summary or null",
+  fc.property(fc.string(), (query) => {
+    const result = intentFromRegex(query);
+    return result === "comparative" || result === "summary" || result === null;
+  })
 );
 
 // ═════════════════════════════════════════════════════════════════════════════
