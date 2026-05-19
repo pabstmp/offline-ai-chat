@@ -85,6 +85,8 @@ export function openComparison() {
   }
 
   elements.comparisonView.classList.remove("hidden");
+  const mainChat = document.querySelector("main.chat");
+  if (mainChat) mainChat.classList.add("hidden");
   if (elements.messages) elements.messages.classList.add("hidden");
   if (elements.chatForm) elements.chatForm.classList.add("hidden");
 
@@ -112,6 +114,8 @@ export function closeComparison(force = false) {
   sessionState.timers.forEach(t => stopGenerationTimer(t));
 
   elements.comparisonView.classList.add("hidden");
+  const mainChat = document.querySelector("main.chat");
+  if (mainChat) mainChat.classList.remove("hidden");
   if (elements.messages) elements.messages.classList.remove("hidden");
   if (elements.chatForm) elements.chatForm.classList.remove("hidden");
 
@@ -129,6 +133,29 @@ function renderComparisonView() {
   const container = elements.comparisonView;
   container.innerHTML = "";
   container.className = "comparison-view";
+
+  // Cabeçalho unificado e moderno
+  const header = document.createElement("div");
+  header.className = "comparison-header";
+
+  const title = document.createElement("h2");
+  title.className = "comparison-title";
+  title.textContent = "Comparação de Modelos";
+
+  const backBtn = document.createElement("button");
+  backBtn.className = "btn btn-secondary btn-sm comparison-back-btn";
+  backBtn.innerHTML = `
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;">
+      <line x1="19" y1="12" x2="5" y2="12"></line>
+      <polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    Voltar ao Chat
+  `;
+  backBtn.addEventListener("click", () => closeComparison());
+
+  header.appendChild(title);
+  header.appendChild(backBtn);
+  container.appendChild(header);
 
   const panelsWrap = document.createElement("div");
   panelsWrap.className = "comparison-panels";
@@ -174,6 +201,18 @@ function buildPanel(index) {
   body.className = "panel-body";
   const messages = document.createElement("div");
   messages.className = "panel-messages";
+
+  // Adiciona estado inicial vazio elegante (Empty State)
+  const emptyState = document.createElement("div");
+  emptyState.className = "panel-empty-state";
+  emptyState.innerHTML = `
+    <svg class="empty-icon" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+    </svg>
+    <div class="empty-title">Aguardando prompt</div>
+    <div class="empty-desc">Selecione um modelo acima e escreva um prompt para iniciar a comparação.</div>
+  `;
+  messages.appendChild(emptyState);
   body.appendChild(messages);
 
   const footer = document.createElement("div");
@@ -351,6 +390,9 @@ async function startGeneration(index) {
   if (index === 0) sessionState.busyA = true;
   else sessionState.busyB = true;
 
+  // Adiciona feedback visual de processamento
+  panel.classList.add("generating");
+
   const conn = store.get("connection");
   const server = resolveServerForModel(modelId, conn.servers, modelToServerId);
   if (!server) {
@@ -411,6 +453,8 @@ async function startGeneration(index) {
     else sessionState.busyB = false;
     sessionState.streamControllers[index] = null;
     stopGenerationTimer(timer);
+    // Remove feedback visual de processamento
+    panel.classList.remove("generating");
   }
 }
 
