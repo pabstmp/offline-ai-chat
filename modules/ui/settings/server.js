@@ -110,9 +110,7 @@ export function panelServer() {
   const modelsSec = section("Modelos no servidor LM Studio");
   const modelsHelp = document.createElement("p");
   modelsHelp.className = "field-help";
-  modelsHelp.textContent =
-    "Visualize quais modelos estão carregados, com qual context length, e recarregue com configuração maior. " +
-    "Útil quando o LM Studio carrega o modelo com ctx pequeno por padrão.";
+  modelsHelp.textContent = "Veja modelos carregados e ajuste o context length quando precisar.";
   modelsSec.appendChild(modelsHelp);
 
   const modelsContainer = document.createElement("div");

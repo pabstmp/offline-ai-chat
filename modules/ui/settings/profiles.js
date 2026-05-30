@@ -11,23 +11,57 @@ export function panelProfiles() {
 
   for (const p of profiles) {
     const isActive = activeId === p.id;
-    const c = document.createElement("div");
-    c.className = "drawer-card" + (isActive ? " active-card" : "");
+    const c = document.createElement("details");
+    c.className = "advanced-settings-details profile-details" + (isActive ? " active-card" : "");
+    c.open = isActive;
+
+    const summary = document.createElement("summary");
+    summary.className = "profile-summary";
+    const avatar = document.createElement("span");
+    avatar.className = "profile-summary-icon";
+    avatar.textContent = p.icon || "🤖";
+    const summaryText = document.createElement("span");
+    summaryText.className = "profile-summary-text";
+    const title = document.createElement("strong");
+    title.textContent = p.name || "(sem nome)";
+    const meta = document.createElement("span");
+    meta.textContent = p.defaultModel || "Sem modelo";
+    summaryText.appendChild(title);
+    summaryText.appendChild(meta);
+    summary.appendChild(avatar);
+    summary.appendChild(summaryText);
+    if (isActive) {
+      const badge = document.createElement("span");
+      badge.className = "profile-summary-badge";
+      badge.textContent = "Ativo";
+      summary.appendChild(badge);
+    }
+    c.appendChild(summary);
+
+    c.addEventListener("toggle", () => {
+      if (!c.open) return;
+      sec.querySelectorAll("details.profile-details[open]").forEach((other) => {
+        if (other !== c) other.open = false;
+      });
+    });
+
+    const body = document.createElement("div");
+    body.className = "profile-editor";
 
     const head = document.createElement("div");
     head.className = "row";
     const icon = input({ type: "text", value: p.icon || "", placeholder: "🤖", maxLength: 4,
       style: "width: 60px; text-align: center; font-size: 1.4rem;",
-      onchange: (e) => { p.icon = e.target.value; onChange(); refreshProfileChip(); },
+      onchange: (e) => { p.icon = e.target.value; onChange(); refreshProfileChip(); rebuildPanel("profiles"); },
     });
     const name = input({ type: "text", value: p.name, style: "flex: 1; font-weight: 600;",
-      onchange: (e) => { p.name = e.target.value; onChange(); refreshProfileChip(); },
+      onchange: (e) => { p.name = e.target.value; onChange(); refreshProfileChip(); rebuildPanel("profiles"); },
     });
     head.appendChild(icon);
     head.appendChild(name);
-    c.appendChild(head);
+    body.appendChild(head);
 
-    c.appendChild(field("System prompt", (() => {
+    body.appendChild(field("System prompt", (() => {
       const ta = document.createElement("textarea");
       ta.rows = 4;
       ta.value = p.systemPrompt;
@@ -35,7 +69,7 @@ export function panelProfiles() {
       return ta;
     })()));
 
-    c.appendChild(buildModelSelector(p));
+    body.appendChild(buildModelSelector(p));
 
     if (p.defaultModel && isLikelyThinkingModel(p.defaultModel)) {
       const banner = document.createElement("div");
@@ -46,10 +80,10 @@ export function panelProfiles() {
       banner.style.marginTop = "var(--s-2)";
       banner.style.fontSize = "var(--fs-xs)";
       banner.innerHTML = `<strong>💭 Modelo de raciocínio detectado.</strong> Ele gasta tokens em chain-of-thought que <strong>contam dentro de <code>max_tokens</code></strong> — mantenha em 4000+.`;
-      c.appendChild(banner);
+      body.appendChild(banner);
     }
 
-    c.appendChild(buildSamplingDetails(p));
+    body.appendChild(buildSamplingDetails(p));
 
     const actions = document.createElement("div");
     actions.className = "row";
@@ -75,7 +109,8 @@ export function panelProfiles() {
         rebuildPanel("profiles");
       }));
     }
-    c.appendChild(actions);
+    body.appendChild(actions);
+    c.appendChild(body);
     sec.appendChild(c);
   }
 

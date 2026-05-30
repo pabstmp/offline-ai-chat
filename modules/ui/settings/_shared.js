@@ -9,7 +9,7 @@ export const state = {
   onConnect: () => {},
   onLoadModels: () => {},
   onProfileChange: () => {},
-  activeTab: "server",
+  activeTab: "basic",
   rebuildPanel: () => {},
   conversationStore: null,
   toast: () => {},

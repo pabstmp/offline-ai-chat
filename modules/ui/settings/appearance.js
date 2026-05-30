@@ -115,6 +115,7 @@ export function panelAppearance() {
   card3.className = "drawer-card";
   card3.appendChild(checkbox("Zen mode (esconder histórico)", a.zenMode, (v) => { a.zenMode = v; applyAppearance(a); onChange(); }));
   card3.appendChild(checkbox("Ambient glow (decoração com gradient)", a.ambientGlow, (v) => { a.ambientGlow = v; applyAppearance(a); onChange(); }));
+  card3.appendChild(checkbox("Interface Glassmorphism (efeito translúcido)", a.glassmorphism, (v) => { a.glassmorphism = v; applyAppearance(a); onChange(); }));
   card3.appendChild(field("Animação reduzida", (() => {
     const s = select(
       [{ value: "auto", label: "Automático (segue sistema)" }, { value: "on", label: "Sempre reduzido" }, { value: "off", label: "Sempre completo" }],

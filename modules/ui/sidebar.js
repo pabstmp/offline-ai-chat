@@ -208,6 +208,9 @@ export function closeSidebar() {
 }
 
 function renderList() {
+  if (elements.historySearch) {
+    elements.historySearch.hidden = allConversations.length === 0 && !searchTerm;
+  }
   let filtered;
   if (searchTerm && searchIndex_.size > 0) {
     const allIds = allConversations.map((c) => c.id);
@@ -260,8 +263,8 @@ function renderList() {
   }
   if (!filtered.length) {
     const empty = document.createElement("li");
-    empty.className = "history-group-label";
-    empty.textContent = searchTerm ? "Sem resultados" : "Nenhuma conversa ainda";
+    empty.className = searchTerm ? "history-group-label" : "sidebar-empty";
+    empty.textContent = searchTerm ? "Sem resultados" : "Sem conversas";
     elements.historyList.appendChild(empty);
   }
 }

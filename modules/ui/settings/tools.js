@@ -13,7 +13,7 @@ export function panelTools({ store, onChange }) {
   const intro = document.createElement("p");
   intro.className = "field-help";
   intro.style.marginBottom = "var(--s-4)";
-  intro.textContent = "Habilite ferramentas para que o modelo possa buscar dados na web ou executar código. Requer modelos compatíveis com function calling (ex: Llama 3.1, Mistral, Qwen 2.5).";
+  intro.textContent = "Controle quais ferramentas o perfil ativo pode chamar.";
   container.appendChild(intro);
 
   // 1. Configurações Globais
@@ -61,9 +61,8 @@ export function panelTools({ store, onChange }) {
     list.style.gap = "var(--s-2)";
 
     tools.forEach(tool => {
-      const card = document.createElement("label");
-      card.className = "card tool-card row";
-      card.style.cursor = "pointer";
+      const card = document.createElement("div");
+      card.className = "card tool-card";
       card.style.padding = "var(--s-2) var(--s-3)";
       
       const check = document.createElement("input");
@@ -83,6 +82,7 @@ export function panelTools({ store, onChange }) {
       const info = document.createElement("div");
       info.className = "col";
       info.style.gap = "2px";
+      info.style.flex = "1";
       const name = document.createElement("div");
       name.className = "text-sm weight-600";
       name.textContent = tool.name;
@@ -92,9 +92,25 @@ export function panelTools({ store, onChange }) {
       
       info.appendChild(name);
       info.appendChild(desc);
+
+      const top = document.createElement("label");
+      top.className = "row";
+      top.style.cursor = "pointer";
+      top.style.width = "100%";
+      top.appendChild(check);
+      top.appendChild(info);
       
-      card.appendChild(check);
-      card.appendChild(info);
+      const details = document.createElement("details");
+      details.className = "tool-details";
+      const summary = document.createElement("summary");
+      summary.textContent = "Detalhes";
+      const full = document.createElement("p");
+      full.textContent = tool.description || "Sem descricao.";
+      details.appendChild(summary);
+      details.appendChild(full);
+
+      card.appendChild(top);
+      card.appendChild(details);
       list.appendChild(card);
     });
 
@@ -136,7 +152,24 @@ export function panelTools({ store, onChange }) {
       
       const info = document.createElement("div");
       info.className = "col";
-      info.innerHTML = `<div class="text-sm weight-600">${t.name}</div><div class="text-xs fg-2">${t.description}</div>`;
+      info.style.flex = "1";
+      const title = document.createElement("div");
+      title.className = "text-sm weight-600";
+      title.textContent = t.name;
+      const desc = document.createElement("div");
+      desc.className = "text-xs fg-2 line-clamp-1";
+      desc.textContent = t.description;
+      const details = document.createElement("details");
+      details.className = "tool-details";
+      const detailsSummary = document.createElement("summary");
+      detailsSummary.textContent = "Detalhes";
+      const full = document.createElement("p");
+      full.textContent = t.description || "Sem descricao.";
+      details.appendChild(detailsSummary);
+      details.appendChild(full);
+      info.appendChild(title);
+      info.appendChild(desc);
+      info.appendChild(details);
       
       const actions = document.createElement("div");
       actions.className = "row";
@@ -199,7 +232,24 @@ function renderCustomList(listNode, { store, onChange, container }) {
     
     const info = document.createElement("div");
     info.className = "col";
-    info.innerHTML = `<div class="text-sm weight-600">${t.name}</div><div class="text-xs fg-2">${t.description}</div>`;
+    info.style.flex = "1";
+    const title = document.createElement("div");
+    title.className = "text-sm weight-600";
+    title.textContent = t.name;
+    const desc = document.createElement("div");
+    desc.className = "text-xs fg-2 line-clamp-1";
+    desc.textContent = t.description;
+    const details = document.createElement("details");
+    details.className = "tool-details";
+    const detailsSummary = document.createElement("summary");
+    detailsSummary.textContent = "Detalhes";
+    const full = document.createElement("p");
+    full.textContent = t.description || "Sem descricao.";
+    details.appendChild(detailsSummary);
+    details.appendChild(full);
+    info.appendChild(title);
+    info.appendChild(desc);
+    info.appendChild(details);
     
     const actions = document.createElement("div");
     actions.className = "row";

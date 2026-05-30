@@ -14,6 +14,7 @@ let store = null;
 let onSubmit = null;
 let onSlashSelect = null;
 let lastLength = -1;
+let actionMenu = null;
 
 /* ---------- pending image state ---------- */
 let pendingImage = null; // { base64, mimeType, name } | null
@@ -68,9 +69,7 @@ export function initComposer(opts) {
     onSubmit(text);
   });
 
-  // Add image upload button after attachButton
-  addImageUploadButton();
-  addPromptPickerButton();
+  initAttachmentActions();
 
   // Image drag-drop on composer area
   initComposerDropZone();
@@ -129,6 +128,102 @@ function hasImageFile(e) {
 }
 
 /* ---------- image upload ---------- */
+
+function initAttachmentActions() {
+  if (!elements.attachButton) return;
+  elements.attachButton.setAttribute("aria-haspopup", "menu");
+  elements.attachButton.setAttribute("aria-expanded", "false");
+  elements.attachButton.title = "Anexos e prompts";
+  elements.attachButton.setAttribute("aria-label", "Anexos e prompts");
+  elements.attachButton.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleActionMenu();
+  });
+}
+
+function toggleActionMenu(forceOpen = null) {
+  const shouldOpen = forceOpen === null ? !actionMenu : forceOpen;
+  if (!shouldOpen) {
+    closeActionMenu();
+    return;
+  }
+  openActionMenu();
+}
+
+function closeActionMenu() {
+  if (actionMenu) actionMenu.remove();
+  actionMenu = null;
+  elements.attachButton?.setAttribute("aria-expanded", "false");
+}
+
+function openActionMenu() {
+  closeActionMenu();
+  actionMenu = document.createElement("div");
+  actionMenu.id = "composerActionMenu";
+  actionMenu.className = "composer-action-menu";
+  actionMenu.setAttribute("role", "menu");
+
+  const items = [
+    {
+      label: "Arquivo",
+      hint: "Ctrl+U",
+      icon: `<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>`,
+      run: () => document.dispatchEvent(new CustomEvent("composer:attach-file")),
+    },
+    {
+      label: "Imagem",
+      hint: "PNG, JPG, GIF, WebP",
+      icon: `<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>`,
+      run: pickImageFile,
+    },
+    {
+      label: "Prompt salvo",
+      hint: "Ctrl+Shift+P",
+      icon: `<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>`,
+      run: () => openPromptPicker(store, insertPromptText),
+    },
+  ];
+
+  for (const item of items) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "composer-action-item";
+    btn.setAttribute("role", "menuitem");
+    btn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${item.icon}</svg>
+      <span class="composer-action-label">${item.label}</span>
+      <span class="composer-action-hint">${item.hint}</span>
+    `;
+    btn.addEventListener("click", () => {
+      closeActionMenu();
+      item.run();
+    });
+    actionMenu.appendChild(btn);
+  }
+
+  document.body.appendChild(actionMenu);
+  const rect = elements.attachButton.getBoundingClientRect();
+  const width = 250;
+  actionMenu.style.width = `${width}px`;
+  actionMenu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`;
+  actionMenu.style.top = `${Math.max(8, rect.top - actionMenu.offsetHeight - 8)}px`;
+  elements.attachButton.setAttribute("aria-expanded", "true");
+
+  const close = (e) => {
+    if (!actionMenu) return;
+    if (actionMenu.contains(e.target) || e.target === elements.attachButton) return;
+    closeActionMenu();
+    document.removeEventListener("click", close, true);
+  };
+  const onKey = (e) => {
+    if (e.key !== "Escape") return;
+    closeActionMenu();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  setTimeout(() => document.addEventListener("click", close, true), 0);
+  document.addEventListener("keydown", onKey, true);
+}
 
 function addPromptPickerButton() {
   if (!elements.attachButton) return;
@@ -195,6 +290,18 @@ function addImageUploadButton() {
 
   // Insert after attachButton
   elements.attachButton.insertAdjacentElement("afterend", btn);
+}
+
+function pickImageFile() {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = "image/png,image/jpeg,image/gif,image/webp";
+  inp.addEventListener("change", () => {
+    const file = inp.files[0];
+    if (!file) return;
+    handleImageFile(file);
+  });
+  inp.click();
 }
 
 function handleImageFile(file) {

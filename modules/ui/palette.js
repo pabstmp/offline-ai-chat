@@ -74,7 +74,7 @@ function filter(query) {
 }
 
 function scoreMatch(cmd, q) {
-  const text = `${cmd.label} ${cmd.hint || ""}`.toLowerCase();
+  const text = `${cmd.label} ${cmd.hint || ""} ${cmd.group || ""}`.toLowerCase();
   if (!text.includes(q)) return 0;
   const idx = text.indexOf(q);
   return 100 - idx;
@@ -82,9 +82,19 @@ function scoreMatch(cmd, q) {
 
 function renderList() {
   list.replaceChildren();
+  let currentGroup = "";
   filteredCommands.forEach((c, idx) => {
+    const group = c.group || "Comandos";
+    if (group !== currentGroup) {
+      currentGroup = group;
+      const groupEl = document.createElement("li");
+      groupEl.className = "palette-group";
+      groupEl.textContent = group;
+      list.appendChild(groupEl);
+    }
     const li = document.createElement("li");
     li.className = "palette-item";
+    li.dataset.commandIndex = String(idx);
     li.setAttribute("role", "option");
     li.setAttribute("aria-selected", idx === selectedIndex ? "true" : "false");
     if (c.icon) {
@@ -116,7 +126,8 @@ function renderList() {
 }
 
 function refreshSelection() {
-  [...list.children].forEach((el, idx) => {
+  [...list.querySelectorAll(".palette-item")].forEach((el) => {
+    const idx = Number(el.dataset.commandIndex);
     el.setAttribute("aria-selected", idx === selectedIndex ? "true" : "false");
     if (idx === selectedIndex) el.scrollIntoView({ block: "nearest" });
   });

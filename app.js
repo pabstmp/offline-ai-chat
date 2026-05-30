@@ -67,6 +67,8 @@ const elements = {
   statusDot: $("#statusDot"),
   statusLabel: $("#statusLabel"),
   ragIndexingIndicator: $("#ragIndexingIndicator"),
+  moreButton: $("#moreButton"),
+  moreMenu: $("#moreMenu"),
   workspaceToggle: $("#workspaceToggle"),
   compareToggle: $("#compareToggle"),
   paletteButton: $("#paletteButton"),
@@ -193,17 +195,34 @@ function getActiveProfile() {
   return profiles.find((p) => p.id === id) || profiles[0];
 }
 
+function compactModelName(model) {
+  if (!model) return "";
+  const last = String(model).split("/").pop();
+  return last.length > 32 ? `${last.slice(0, 29)}...` : last;
+}
+
 function refreshChips() {
-  const server = getActiveServer();
   const profile = getActiveProfile();
   elements.modelChipLabel.textContent = profile?.defaultModel || "Sem modelo";
   elements.profileChipLabel.textContent = profile ? `${profile.icon || ""} ${profile.name}`.trim() : "Perfil";
+  if (elements.promptInput) {
+    const model = compactModelName(profile?.defaultModel);
+    elements.promptInput.placeholder = model ? `Mensagem para ${model}...` : "Mensagem para o modelo atual...";
+  }
   refreshSuggestionChips();
 }
 
 function setStatus(kind, label) {
   elements.statusDot.className = `dot ${kind || ""}`.trim();
   elements.statusLabel.textContent = label;
+  const descriptions = {
+    connected: "Conectado ao servidor ativo.",
+    connecting: "Tentando conectar ao servidor ativo.",
+    error: "Falha na conexao. Clique para trocar servidor ou ajustar a URL.",
+  };
+  const detail = descriptions[kind] || "Sem conexao. Clique para configurar o servidor.";
+  elements.statusPill.title = `${label} - ${detail}`;
+  elements.statusPill.setAttribute("aria-label", `Estado da conexao: ${label}. ${detail}`);
 }
 
 function toggleEmptyState() {
@@ -1624,34 +1643,44 @@ function openServerDropdown(servers, activeServerId) {
   setTimeout(() => document.addEventListener("click", close, true), 0);
 }
 
+function toggleMoreMenu(forceOpen = null) {
+  if (!elements.moreButton || !elements.moreMenu) return;
+  const shouldOpen = forceOpen === null ? elements.moreMenu.hidden : forceOpen;
+  elements.moreMenu.hidden = !shouldOpen;
+  elements.moreButton.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+}
+
 /* ---------- shortcuts ---------- */
 
 function buildPaletteCommands() {
   const profiles = store.get("profiles") || [];
   const conn = store.get("connection");
   return [
-    { label: "Nova conversa", icon: "✨", run: newConversation },
-    { label: "Limpar contexto do workspace", icon: "🧹", run: () => clearFiles() },
-    { label: "Configurações: Servidor", icon: "🖧", run: () => openSettings("server") },
-    { label: "Configurações: Perfis & Inferência", icon: "🧠", run: () => openSettings("profiles") },
-    { label: "Configurações: Hardware", icon: "🖥️", run: () => openSettings("model") },
-    { label: "Configurações: Aparência", icon: "🎨", run: () => openSettings("appearance") },
-    { label: "Configurações: Perfis", icon: "👤", run: () => openSettings("profiles") },
-    { label: "Configurações: Atalhos", icon: "⌨", run: () => openSettings("shortcuts") },
-    { label: "Configurações: Workspace", icon: "📁", run: () => openSettings("workspace") },
-    { label: "Configurações: Avançado", icon: "🛠", run: () => openSettings("advanced") },
-    { label: "Toggle tema (claro/escuro)", icon: "☀", run: toggleTheme },
-    { label: "Toggle modo zen", icon: "🧘", run: toggleZen },
+    { label: "Nova conversa", group: "Chat", run: newConversation },
+    { label: "Abrir Workspace", hint: "Ctrl+Shift+E", group: "Chat", run: () => elements.workspaceToggle?.click() },
+    { label: "Comparar modelos", hint: "Ctrl+Shift+C", group: "Chat", run: () => elements.compareToggle?.click() },
+    { label: "Biblioteca de prompts", hint: "Ctrl+Shift+P", group: "Chat", run: () => openPromptPicker(store, insertPromptText) },
+    { label: "Limpar contexto do workspace", group: "Chat", run: () => clearFiles() },
+    { label: "Configuracoes", hint: "Essencial", group: "Configuracoes", run: () => openSettings("basic") },
+    { label: "Servidor", hint: "Configuracoes", group: "Configuracoes", run: () => openSettings("server") },
+    { label: "Perfis e inferencia", hint: "Configuracoes", group: "Configuracoes", run: () => openSettings("profiles") },
+    { label: "Workspace e RAG", hint: "Configuracoes", group: "Configuracoes", run: () => openSettings("workspace") },
+    { label: "Ferramentas", hint: "Configuracoes", group: "Configuracoes", run: () => openSettings("tools") },
+    { label: "Avancado", hint: "Configuracoes", group: "Configuracoes", run: () => openSettings("advanced") },
+    { label: "Alternar tema", group: "Aparencia", run: toggleTheme },
+    { label: "Alternar modo zen", group: "Aparencia", run: toggleZen },
     ...profiles.map((p) => ({
-      label: `Perfil: ${p.name}`, hint: p.systemPrompt.slice(0, 40), icon: p.icon || "👤",
+      label: `Perfil: ${p.name}`,
+      hint: p.id === store.get("activeProfileId") ? "Ativo" : (p.defaultModel || ""),
+      group: "Perfis",
       run: () => { store.set("activeProfileId", p.id); refreshChips(); toast(`Perfil: ${p.name}`, "info"); },
     })),
     ...conn.servers.map((s) => ({
-      label: `Servidor: ${s.nickname}`, icon: "🖧", hint: s.baseUrl,
+      label: `Servidor: ${s.nickname}`, hint: s.baseUrl, group: "Servidores",
       run: () => { store.set("connection.activeServerId", s.id); loadModels().catch(() => {}); },
     })),
     ...runtime.models.map((m) => ({
-      label: `Modelo: ${m}`, icon: "🧠",
+      label: `Modelo: ${m}`, group: "Modelos",
       run: () => {
         const profile = getActiveProfile();
         profile.defaultModel = m;
@@ -1804,8 +1833,8 @@ async function init() {
   // topbar
   elements.sidebarToggle.addEventListener("click", toggleSidebar);
   elements.sidebarBackdrop.addEventListener("click", closeSidebar);
-  elements.profileChip.addEventListener("click", () => openSettings("profiles"));
-  elements.modelChip.addEventListener("click", () => openSettings("profiles"));
+  elements.profileChip.addEventListener("click", () => openSettings("basic"));
+  elements.modelChip.addEventListener("click", () => openSettings("basic"));
   elements.statusPill.addEventListener("click", () => {
     const conn = store.get("connection");
     const servers = conn.servers || [];
@@ -1820,6 +1849,21 @@ async function init() {
   }
   elements.settingsButton.addEventListener("click", () => openSettings());
   elements.paletteButton.addEventListener("click", () => openPalette(buildPaletteCommands()));
+  if (elements.moreButton && elements.moreMenu) {
+    elements.moreButton.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleMoreMenu();
+    });
+    elements.moreMenu.addEventListener("click", () => toggleMoreMenu(false));
+    document.addEventListener("click", (e) => {
+      if (elements.moreMenu.hidden) return;
+      if (e.target.closest?.(".topbar-more")) return;
+      toggleMoreMenu(false);
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") toggleMoreMenu(false);
+    });
+  }
 
   // Notifications
   initNotifications({ store, toastFn: toast });
@@ -1888,7 +1932,7 @@ async function init() {
   registerAction("nextProfile", nextProfile);
   registerAction("openPromptPicker", () => openPromptPicker(store, insertPromptText));
   registerAction("toggleZen", toggleZen);
-  registerAction("attachFile", () => elements.attachButton?.click());
+  registerAction("attachFile", () => document.dispatchEvent(new CustomEvent("composer:attach-file")));
   registerAction("toggleWorkspace", () => elements.workspaceToggle?.click());
   registerAction("quickOpen", () => elements.workspaceToggle?.click());
   setKeymap(store.get("keymap"));

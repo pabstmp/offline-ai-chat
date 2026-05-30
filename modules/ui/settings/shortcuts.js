@@ -15,6 +15,7 @@ export function panelShortcuts() {
     openPalette: "Paleta de comandos",
     focusComposer: "Focar composer",
     stopStream: "Parar geração",
+    openPromptPicker: "Biblioteca de prompts",
     nextProfile: "Próximo perfil",
     toggleZen: "Modo zen",
     attachFile: "Anexar arquivo",

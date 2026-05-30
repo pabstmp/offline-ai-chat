@@ -105,9 +105,20 @@ async function buildHardwareCard() {
       recList.appendChild(empty);
       return;
     }
-    recs.forEach((m, idx) => {
+    recs.slice(0, 3).forEach((m, idx) => {
       recList.appendChild(buildRecommendationRow(m, idx));
     });
+    if (recs.length > 3) {
+      const more = document.createElement("details");
+      more.className = "advanced-settings-details compact-details";
+      const summary = document.createElement("summary");
+      summary.textContent = `Mostrar mais ${recs.length - 3} recomendacoes`;
+      more.appendChild(summary);
+      recs.slice(3).forEach((m, idx) => {
+        more.appendChild(buildRecommendationRow(m, idx + 3));
+      });
+      recList.appendChild(more);
+    }
   }
 
   for (const cat of CATEGORIES) {
@@ -165,20 +176,27 @@ function buildRecommendationRow(m, idx) {
   head.appendChild(fitTag);
   row.appendChild(head);
 
+  const tech = document.createElement("details");
+  tech.className = "recommendation-details";
+  const techSummary = document.createElement("summary");
+  techSummary.textContent = "Detalhes";
+  tech.appendChild(techSummary);
+
   const meta = document.createElement("p");
   meta.className = "field-help";
   meta.style.margin = "0";
   meta.textContent = `${m.params}B params · ${m.fileSizeGB}GB · ${formatContextWindow(m.contextWindow)} ctx · ~${m.recommendedVramGB}GB VRAM · ${m.strengths.join(", ")}`;
-  row.appendChild(meta);
+  tech.appendChild(meta);
 
   if (m.notes) {
     const notes = document.createElement("p");
     notes.className = "field-help";
-    notes.style.margin = "0";
+    notes.style.margin = "var(--s-1) 0 0";
     notes.style.color = "var(--fg-1)";
     notes.textContent = m.notes;
-    row.appendChild(notes);
+    tech.appendChild(notes);
   }
+  row.appendChild(tech);
 
   const actionsRow = document.createElement("div");
   actionsRow.className = "row";

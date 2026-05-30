@@ -7,11 +7,17 @@ export function panelAdvanced() {
   const adv = store.get("advanced");
 
   const sec = section("Geração");
+  const genDetails = document.createElement("details");
+  genDetails.className = "advanced-settings-details";
+  const genSummary = document.createElement("summary");
+  genSummary.textContent = "Streaming e debug";
+  genDetails.appendChild(genSummary);
   const c = document.createElement("div");
   c.className = "drawer-card";
   c.appendChild(checkbox("Streaming (recomendado)", adv.streaming, (v) => { adv.streaming = v; onChange(); }));
   c.appendChild(checkbox("Modo debug — loga payload no console", adv.debugMode, (v) => { adv.debugMode = v; onChange(); }));
-  sec.appendChild(c);
+  genDetails.appendChild(c);
+  sec.appendChild(genDetails);
   elements.settingsBody.appendChild(sec);
 
   // Busca web — só aparece se o usuário quiser mexer. Default é DDG sem config.
@@ -292,6 +298,11 @@ export function panelAdvanced() {
   elements.settingsBody.appendChild(libSec);
 
   const ioSec = section("Backup");
+  const ioDetails = document.createElement("details");
+  ioDetails.className = "advanced-settings-details";
+  const ioSummary = document.createElement("summary");
+  ioSummary.textContent = "Exportar ou importar configuracoes";
+  ioDetails.appendChild(ioSummary);
   const ioCard = document.createElement("div");
   ioCard.className = "drawer-card";
   const ioRow = document.createElement("div");
@@ -318,7 +329,8 @@ export function panelAdvanced() {
     inp.click();
   }));
   ioCard.appendChild(ioRow);
-  ioSec.appendChild(ioCard);
+  ioDetails.appendChild(ioCard);
+  ioSec.appendChild(ioDetails);
   elements.settingsBody.appendChild(ioSec);
 
   // Templates de conversa

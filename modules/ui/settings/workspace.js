@@ -8,8 +8,6 @@ export function panelWorkspace() {
   const { store, elements, onChange, rebuildPanel } = state;
   const ws = store.get("workspace");
 
-  elements.settingsBody.appendChild(buildRagGlobalSection());
-
   const sec = section("Fontes de contexto");
 
   if (!ws.sources?.length) {
@@ -137,6 +135,8 @@ export function panelWorkspace() {
   sec.appendChild(addCard);
   elements.settingsBody.appendChild(sec);
 
+  elements.settingsBody.appendChild(buildRagGlobalSection());
+
   const limitsSec = section("Limites & filtros");
   const limitsDetails = document.createElement("details");
   limitsDetails.className = "advanced-settings-details";
@@ -203,10 +203,10 @@ async function validateEmbeddingMatch() {
 
 function buildRagGlobalSection() {
   const { store, elements, onChange, rebuildPanel } = state;
-  const ragSec = section("🔍 RAG — Retrieval-Augmented Generation");
+  const ragSec = section("RAG");
   const ragDoc = document.createElement("p");
   ragDoc.className = "field-help";
-  ragDoc.textContent = "Quando ativado, o app indexa as fontes de Workspace em embeddings vetoriais e busca os trechos mais relevantes pra cada pergunta — mais escalável que injetar arquivos inteiros.";
+  ragDoc.textContent = "Busca trechos relevantes nas fontes indexadas sem enviar arquivos inteiros.";
   ragSec.appendChild(ragDoc);
 
   const ragCfg = store.get("rag");
@@ -303,20 +303,23 @@ function buildRagGlobalSection() {
     return wrap;
   };
 
-  const autoBox = document.createElement("div");
-  autoBox.style.padding = "var(--s-2) var(--s-3)";
-  autoBox.style.background = "var(--accent-soft)";
-  autoBox.style.border = "1px solid var(--accent)";
-  autoBox.style.borderRadius = "var(--r-sm)";
-  autoBox.style.marginTop = "var(--s-2)";
-  autoBox.style.fontSize = "var(--fs-xs)";
+  const autoDetails = document.createElement("details");
+  autoDetails.className = "advanced-settings-details compact-details";
+  const autoSummary = document.createElement("summary");
+  autoSummary.textContent = "Como a estrategia automatica funciona";
+  autoDetails.appendChild(autoSummary);
+  const autoBox = document.createElement("p");
+  autoBox.className = "field-help";
   autoBox.innerHTML =
-    `<strong>✨ Estratégia automática</strong> — o app detecta o tipo da sua pergunta e ajusta a busca:<br>` +
-    `• <em>Comparativa</em> ("liste todas", "qual o mais caro") → 1 chunk de cada arquivo<br>` +
-    `• <em>Resumo</em> ("resuma", "do que se trata") → vários chunks do mesmo arquivo<br>` +
-    `• <em>Pontual</em> ("qual o ID da fatura X") → top 5 mais relevantes<br>` +
-    `Você não precisa configurar nada — só perguntar.`;
-  ragCard.appendChild(autoBox);
+    `O app detecta perguntas comparativas, de resumo ou pontuais e ajusta topK/maxPerFile automaticamente.`;
+  autoDetails.appendChild(autoBox);
+  ragCard.appendChild(autoDetails);
+
+  const advanced = document.createElement("details");
+  advanced.className = "advanced-settings-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "RAG avancado";
+  advanced.appendChild(summary);
 
   const ws = store.get("workspace");
   const ocrWrap = document.createElement("div");
@@ -334,17 +337,7 @@ function buildRagGlobalSection() {
   ocrHelp.className = "field-help";
   ocrHelp.innerHTML = "Quando ativo, páginas sem text layer são renderizadas como imagem e processadas com Tesseract (idiomas <code>pt+en</code> por padrão, configurável via env <code>OCR_LANGS</code>). Os modelos de idioma são baixados de uma CDN na primeira execução e ficam em cache.";
   ocrWrap.appendChild(ocrHelp);
-  ragCard.appendChild(ocrWrap);
-
-  const advanced = document.createElement("details");
-  advanced.style.marginTop = "var(--s-3)";
-  const summary = document.createElement("summary");
-  summary.style.cursor = "pointer";
-  summary.style.color = "var(--fg-2)";
-  summary.style.fontSize = "var(--fs-xs)";
-  summary.style.userSelect = "none";
-  summary.textContent = "Avançado (configuração manual)";
-  advanced.appendChild(summary);
+  advanced.appendChild(ocrWrap);
 
   const advBody = document.createElement("div");
   advBody.style.marginTop = "var(--s-2)";
@@ -374,12 +367,11 @@ function buildRagGlobalSection() {
   advBody.appendChild(sliderRow("Batch size do embedder", "batchSize", 1, 128, 1));
 
   advanced.appendChild(advBody);
+  advanced.appendChild(buildRerankingSection());
   ragCard.appendChild(advanced);
 
   ragSec.appendChild(ragCard);
-  
-  ragSec.appendChild(buildRerankingSection());
-  
+
   return ragSec;
 }
 

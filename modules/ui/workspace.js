@@ -31,26 +31,7 @@ export function initWorkspace(opts) {
 
   const ws = store.get("workspace") || {};
 
-  // attach button (in composer bar)
-  if (elements.attachButton) {
-    elements.attachButton.addEventListener("click", async () => {
-      const result = await upload.pickFiles({ maxBytes: ws.maxFileBytes, ocr: !!ws.ocrEnabled });
-      const files = result.files || result; // backwards-compat
-      const skipped = result.skipped || [];
-      if (files.length) {
-        addFiles(files, "upload", "Upload");
-        toast(`${files.length} arquivo(s) adicionado(s) ao contexto`, "success");
-      }
-      if (skipped.length) {
-        const summary = skipped.slice(0, 3).map((s) => `${s.name}: ${s.reason}`).join("; ");
-        const more = skipped.length > 3 ? ` (+${skipped.length - 3} outros)` : "";
-        toast(`${skipped.length} arquivo(s) pulado(s). ${summary}${more}`, "warn", 6000);
-      }
-      if (!files.length && !skipped.length) {
-        // nothing happened — user cancelled the picker
-      }
-    });
-  }
+  document.addEventListener("composer:attach-file", pickUploadFiles);
 
   // drag-and-drop
   dragdrop.bindDragDrop({
@@ -79,9 +60,24 @@ export function initWorkspace(opts) {
   }
 }
 
+async function pickUploadFiles() {
+  const ws = store.get("workspace") || {};
+  const result = await upload.pickFiles({ maxBytes: ws.maxFileBytes, ocr: !!ws.ocrEnabled });
+  const files = result.files || result; // backwards-compat
+  const skipped = result.skipped || [];
+  if (files.length) {
+    addFiles(files, "upload", "Upload");
+    toast(`${files.length} arquivo(s) adicionado(s) ao contexto`, "success");
+  }
+  if (skipped.length) {
+    const summary = skipped.slice(0, 3).map((s) => `${s.name}: ${s.reason}`).join("; ");
+    const more = skipped.length > 3 ? ` (+${skipped.length - 3} outros)` : "";
+    toast(`${skipped.length} arquivo(s) pulado(s). ${summary}${more}`, "warn", 6000);
+  }
+}
+
 function renderContextPanel(summary) {
   if (!elements.contextPanel) return;
-  const ws = store.get("workspace") || {};
   // Use a more realistic ceiling: typical LM Studio default ctx is 4096 tokens,
   // model can be configured up to 128k. We warn at 3500 (close to 4k default).
   const SAFE_LIMIT = 3500;   // green
@@ -102,32 +98,6 @@ function renderContextPanel(summary) {
   else if (summary.totalTokens > WARN_LIMIT) level = "warn";
   else if (summary.totalTokens > SAFE_LIMIT) level = "soft-warn";
 
-  if (level === "warn" || level === "danger") {
-    const warn = document.createElement("div");
-    warn.style.padding = "var(--s-2) var(--s-3)";
-    warn.style.borderRadius = "var(--r-sm)";
-    warn.style.fontSize = "var(--fs-xs)";
-    warn.style.marginBottom = "var(--s-2)";
-    if (level === "danger") {
-      warn.style.background = "var(--danger-soft)";
-      warn.style.color = "var(--danger)";
-      warn.innerHTML = `⚠ <strong>~${summary.totalTokens} tokens</strong> excede context window típico (4k–8k). Provavelmente vai dar "(servidor sem conteúdo)". Use <strong>RAG</strong> (indexar) ou aumente o context length no LM Studio.`;
-    } else {
-      warn.style.background = "rgba(251, 191, 36, 0.12)";
-      warn.style.color = "var(--warn)";
-      warn.innerHTML = `⚠ ~${summary.totalTokens} tokens — pode estourar se o modelo no LM Studio tem ctx menor que 8k. Considere usar RAG.`;
-    }
-    panel.appendChild(warn);
-  } else if (level === "soft-warn") {
-    const warn = document.createElement("div");
-    warn.style.padding = "var(--s-1) var(--s-3)";
-    warn.style.fontSize = "var(--fs-xs)";
-    warn.style.color = "var(--fg-2)";
-    warn.style.marginBottom = "var(--s-1)";
-    warn.textContent = `~${summary.totalTokens} tokens — bem perto do limite default (4k) do LM Studio. Verifique seu context length se estourar.`;
-    panel.appendChild(warn);
-  }
-
   const summaryRow = document.createElement("div");
   summaryRow.className = "context-summary";
   const label = document.createElement("strong");
@@ -136,8 +106,15 @@ function renderContextPanel(summary) {
   } else if (level === "warn") {
     label.style.color = "var(--warn)";
   }
-  label.textContent = `📁 Contexto: ${summary.count} arquivo(s) · ~${summary.totalTokens} tok`;
+  label.textContent = `Contexto: ${summary.count} arquivo(s) · ~${summary.totalTokens} tok`;
   summaryRow.appendChild(label);
+
+  if (level !== "ok") {
+    const alert = document.createElement("span");
+    alert.className = `context-alert ${level}`;
+    alert.textContent = level === "danger" ? "Use RAG ou aumente ctx" : "Verifique ctx";
+    summaryRow.appendChild(alert);
+  }
 
   const spacer = document.createElement("span");
   spacer.className = "spacer";
@@ -165,6 +142,25 @@ function renderContextPanel(summary) {
 
   panel.appendChild(summaryRow);
 
+  const details = document.createElement("details");
+  details.className = "context-details";
+  const detailsSummary = document.createElement("summary");
+  detailsSummary.textContent = "Arquivos e avisos";
+  details.appendChild(detailsSummary);
+
+  if (level !== "ok") {
+    const warn = document.createElement("p");
+    warn.className = `context-warning ${level}`;
+    if (level === "danger") {
+      warn.textContent = `~${summary.totalTokens} tokens excede janelas comuns. Use RAG, remova arquivos ou aumente o context length no LM Studio.`;
+    } else if (level === "warn") {
+      warn.textContent = `~${summary.totalTokens} tokens pode exigir ctx maior que 8k. Considere RAG.`;
+    } else {
+      warn.textContent = `~${summary.totalTokens} tokens fica perto do ctx default de 4k.`;
+    }
+    details.appendChild(warn);
+  }
+
   for (const f of summary.files) {
     const row = document.createElement("div");
     row.className = "context-file";
@@ -182,8 +178,9 @@ function renderContextPanel(summary) {
     row.appendChild(tag);
     row.appendChild(tokens);
     row.appendChild(remove);
-    panel.appendChild(row);
+    details.appendChild(row);
   }
+  panel.appendChild(details);
 
   // border color reflects warning level (uses level set above)
   if (level === "danger") panel.style.borderColor = "var(--danger)";

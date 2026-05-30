@@ -162,6 +162,7 @@ function appearanceDefaults() {
     density: "normal",
     radius: 10,
     ambientGlow: false,
+    glassmorphism: false,
     zenMode: false,
     reducedMotion: "auto",
   };

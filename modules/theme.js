@@ -54,6 +54,10 @@ export function applyAppearance(appearance) {
   if (appearance.ambientGlow) root.setAttribute("data-ambient", "on");
   else root.removeAttribute("data-ambient");
 
+  // glassmorphism (optional modern glass visual style)
+  if (appearance.glassmorphism) root.setAttribute("data-glassmorphism", "on");
+  else root.removeAttribute("data-glassmorphism");
+
   // font family
   if (appearance.fontUI && appearance.fontUI !== "system") {
     root.style.setProperty("--font-sans", appearance.fontUI);
