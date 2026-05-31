@@ -18,6 +18,9 @@ yarn-error.log*
 tesseract-cache/
 .cache/
 
+# Cron state local (cron-state.json contém API keys em texto) + saída das tarefas
+data/
+
 # OS files
 .DS_Store
 Thumbs.db

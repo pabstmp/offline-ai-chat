@@ -288,6 +288,17 @@ function ragDefaults() {
   };
 }
 
+/* Preferências de UI das tarefas agendadas. As tarefas/conexões em si vivem
+   no SERVIDOR (cron-state.json), buscadas via /api/cron/list — aqui só guardamos
+   prefs do browser. notifyOnCompletion: dispara toast/notification quando um
+   boletim novo é detectado. lastSeenRunAt: marca d'água pra detectar runs novos. */
+function cronUiDefaults() {
+  return {
+    notifyOnCompletion: true,
+    lastSeenRunAt: 0,
+  };
+}
+
 export function defaults() {
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -301,6 +312,7 @@ export function defaults() {
     tools: toolsDefaults(),
     workspace: workspaceDefaults(),
     rag: ragDefaults(),
+    cron: cronUiDefaults(),
     hardwareOverride: null,
   };
 }

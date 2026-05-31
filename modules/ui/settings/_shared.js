@@ -2,6 +2,8 @@
    Each panel imports `state` for callbacks/store access and the
    small primitive helpers below for consistent UI. */
 
+import { formatPricePerM } from "../../model-catalog.js";
+
 export const state = {
   elements: null,
   store: null,
@@ -105,6 +107,51 @@ export function card(content) {
 export function setModelOptions(models) {
   if (!state.elements) return;
   state.elements.modelOptions = Array.isArray(models) ? models.slice() : [];
+}
+
+export function populateModelSelectWithOptions(selectElement, models, currentValue) {
+  selectElement.innerHTML = "";
+  if (!models || !models.length) {
+    selectElement.appendChild(new Option("Sem modelos disponíveis", ""));
+    return;
+  }
+
+  const hasPricing = models.some(m => m && typeof m === "object" && m.pricing);
+
+  if (hasPricing) {
+    const freeGroup = document.createElement("optgroup");
+    freeGroup.label = "🎁 Modelos Gratuitos ($0)";
+    
+    const paidGroup = document.createElement("optgroup");
+    paidGroup.label = "💰 Modelos Pagos";
+
+    for (const m of models) {
+      if (!m) continue;
+      let label = m.name || m.id;
+      if (!m.isFree && m.pricing) {
+        const price = formatPricePerM(m.pricing);
+        if (price) label += ` (${price})`;
+      }
+      const opt = new Option(label, m.id);
+      if (m.id === currentValue) opt.selected = true;
+      
+      if (m.isFree) freeGroup.appendChild(opt);
+      else paidGroup.appendChild(opt);
+    }
+
+    selectElement.appendChild(freeGroup);
+    selectElement.appendChild(paidGroup);
+  } else {
+    selectElement.appendChild(new Option("— Selecione um modelo —", ""));
+    for (const m of models) {
+      if (!m) continue;
+      const id = typeof m === "string" ? m : m.id;
+      const name = typeof m === "string" ? m : (m.name || m.id);
+      const opt = new Option(name, id);
+      if (id === currentValue) opt.selected = true;
+      selectElement.appendChild(opt);
+    }
+  }
 }
 
 export function getActiveProfile() {

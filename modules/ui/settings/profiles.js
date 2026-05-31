@@ -1,7 +1,7 @@
 import { defaultSampling } from "../../schema.js";
 import { isLikelyThinkingModel } from "../../model-catalog.js";
 import { toast } from "../toasts.js";
-import { state, section, field, input, select, button, downloadJson } from "./_shared.js";
+import { state, populateModelSelectWithOptions, section, field, input, select, button, downloadJson } from "./_shared.js";
 
 export function panelProfiles() {
   const { store, elements, onChange, onProfileChange, rebuildPanel } = state;
@@ -158,13 +158,10 @@ function buildModelSelector(profile) {
     const sel = document.createElement("select");
     sel.style.flex = "1";
     const hasModels = elements.modelOptions?.length;
-    sel.appendChild(new Option(hasModels ? "— Selecione —" : "— Carregue modelos do servidor —", ""));
-    if (hasModels) {
-      for (const m of elements.modelOptions) sel.appendChild(new Option(m, m));
-    }
-    // If the saved model isn't in the dropdown (server offline ou ID antigo),
-    // mostra mesmo assim como opção selecionada pra não perder a referência.
-    if (profile.defaultModel && (!hasModels || !elements.modelOptions.includes(profile.defaultModel))) {
+    populateModelSelectWithOptions(sel, elements.modelOptions || [], profile.defaultModel || "");
+
+    const modelIds = (elements.modelOptions || []).map(m => typeof m === "string" ? m : m.id);
+    if (profile.defaultModel && (!hasModels || !modelIds.includes(profile.defaultModel))) {
       const opt = new Option(profile.defaultModel, profile.defaultModel);
       opt.selected = true;
       sel.appendChild(opt);

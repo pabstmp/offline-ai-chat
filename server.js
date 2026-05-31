@@ -12,6 +12,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { URL } = require("node:url");
 
+const { createSafeWriter } = require("./server-lib/safe-write");
+const { createLlmCaller } = require("./server-lib/llm");
+const { createCronEngine } = require("./server-lib/cron-engine");
+
 const HOST = process.env.HOST || "127.0.0.1";
 const PORT = Number(process.env.PORT || 8080);
 const ROOT = __dirname;
@@ -39,6 +43,20 @@ const WORKSPACE_ROOTS = parseCsvEnv("WORKSPACE_ROOTS");
    client. Mantém UX: zero-config funciona com DDG, e o usuário power-user
    cola a key em Settings → Avançado sem mexer em env vars. */
 const BRAVE_SEARCH_API_KEY_ENV = (process.env.BRAVE_SEARCH_API_KEY || "").trim();
+
+/* Cron / tarefas agendadas. Desligado por default (opt-in). A EXECUÇÃO só roda
+   com CRON_ENABLED=true; o gerenciamento via UI funciona sempre (o engine só
+   carrega/edita estado, sem disparar timers, quando desabilitado).
+   FS_WRITE_ROOTS é uma whitelist SEPARADA de WORKSPACE_ROOTS — escrita só é
+   permitida nessas raízes (nunca no mount :ro de leitura). */
+const CRON_ENABLED = readBoolEnv("CRON_ENABLED", false);
+const FS_WRITE_ROOTS = parseCsvEnv("FS_WRITE_ROOTS");
+const CRON_STATE_DIR = process.env.CRON_STATE_DIR || path.join(ROOT, "data");
+const CRON_SEED_FILE = (process.env.CRON_SEED_FILE || "").trim();
+const CRON_TZ = (process.env.CRON_TZ || "UTC").trim();
+const CRON_MAX_TIMEOUT_MS = readPositiveIntEnv("CRON_MAX_TIMEOUT_MS", 300_000);
+const CRON_MAX_FAILURES = readPositiveIntEnv("CRON_MAX_FAILURES", 5);
+const MAX_WRITE_BYTES = readPositiveIntEnv("MAX_WRITE_BYTES", 5 * 1024 * 1024);
 
 const MIME_TYPES = {
   ".css": "text/css; charset=utf-8",
@@ -250,6 +268,9 @@ function isLoopbackHostname(hostname) {
 }
 
 function isAllowedProxyTarget(url) {
+  // OpenRouter: preset de nuvem suportado nativamente (host publico fixo, HTTPS) —
+  // liberado mesmo com ALLOWED_LM_HOSTS restrito; nao amplia SSRF para hosts internos.
+  if (isOpenRouterHost(url.hostname)) return true;
   if (ALLOWED_LM_HOSTS.length) {
     const hostname = url.hostname.toLowerCase();
     const host = url.host.toLowerCase();
@@ -264,6 +285,10 @@ function isAllowedProxyTarget(url) {
 /* Like proxyRequest but bypasses the /v1 path — used for LM Studio's
    extended API endpoints (/api/v0/*, /api/v1/models/load) which don't
    live under /v1/. We strip /v1 from the baseUrl and use absolutePath. */
+function isOpenRouterHost(hostname) {
+  return hostname === "openrouter.ai" || hostname.endsWith(".openrouter.ai");
+}
+
 function proxyRequestRaw({ apiKey, baseUrl, body, method, response, absolutePath }) {
   const base = normalizeBaseUrl(baseUrl);
   // Replace the /v1 path with the absolutePath
@@ -277,6 +302,10 @@ function proxyRequestRaw({ apiKey, baseUrl, body, method, response, absolutePath
     headers["Content-Type"] = "application/json";
   }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (isOpenRouterHost(target.hostname)) {
+    headers["HTTP-Referer"] = "https://offline-ai-chat.local";
+    headers["X-Title"] = "Offline AI Chat";
+  }
 
   const upstream = client.request(target, { headers, method }, (upstreamResponse) => {
     response.writeHead(upstreamResponse.statusCode || 502, withSecurityHeaders({
@@ -314,6 +343,10 @@ function proxyRequest({ apiKey, baseUrl, body, method, response, upstreamPath })
     headers["Content-Type"] = "application/json";
   }
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  if (isOpenRouterHost(target.hostname)) {
+    headers["HTTP-Referer"] = "https://offline-ai-chat.local";
+    headers["X-Title"] = "Offline AI Chat";
+  }
 
   const upstream = client.request(target, { headers, method }, (upstreamResponse) => {
     const elapsed = Date.now() - startedAt;
@@ -397,6 +430,9 @@ async function handleApi(request, response, pathname) {
     }
     if (pathname === "/api/tools/web-search") {
       return handleToolsWebSearch(body, response, request);
+    }
+    if (pathname.startsWith("/api/cron/")) {
+      return handleCronApi(request, response, pathname, body);
     }
     if (pathname === "/api/lm/models-info") {
       // LM Studio extended API — list with state + max_ctx + loaded_ctx + arch
@@ -1062,6 +1098,76 @@ function serveStatic(request, response, pathname) {
   });
 }
 
+/* ---------- cron engine (tarefas agendadas) ---------- */
+
+/* Camada de escrita segura: whitelist própria (FS_WRITE_ROOTS), reaproveitando
+   a tradução de paths Windows→container e o realpath do server. */
+const safeWriter = createSafeWriter({
+  writeRoots: FS_WRITE_ROOTS,
+  translateWindowsPath,
+  realpathIfExists,
+  maxWriteBytes: MAX_WRITE_BYTES,
+});
+
+/* Caller LLM in-process (não-streaming). Reaproveita o guard SSRF do proxy
+   (normalizeBaseUrl → isAllowedProxyTarget) como fonte única. */
+const { callLLMOnce } = createLlmCaller({ normalizeBaseUrl, isOpenRouterHost });
+
+const cron = createCronEngine({
+  enabled: CRON_ENABLED,
+  stateFilePath: path.join(CRON_STATE_DIR, "cron-state.json"),
+  seedFilePath: CRON_SEED_FILE || null,
+  defaultTz: CRON_TZ,
+  maxTimeoutMs: CRON_MAX_TIMEOUT_MS,
+  maxFailures: CRON_MAX_FAILURES,
+  taskDeps: {
+    callLLMOnce,
+    webSearch: (query) => webSearchCore(query, ""), // usa Brave key do env (fallback DDG)
+    safeWriter,
+  },
+  log: console,
+});
+
+async function handleCronApi(request, response, pathname, body) {
+  if (rateLimited(request)) {
+    return sendJson(response, 429, { error: { message: "Muitas requisições, aguarde." } });
+  }
+  try {
+    if (pathname === "/api/cron/list") {
+      return sendJson(response, 200, cron.getPublicState());
+    }
+    if (pathname === "/api/cron/upsert") {
+      return sendJson(response, 200, { task: cron.upsertTask(body.task || {}) });
+    }
+    if (pathname === "/api/cron/delete") {
+      return sendJson(response, 200, cron.deleteTask(String(body.id || "")));
+    }
+    if (pathname === "/api/cron/run-now") {
+      return sendJson(response, 200, cron.runNow(String(body.id || "")));
+    }
+    if (pathname === "/api/cron/history") {
+      return sendJson(response, 200, { history: cron.getHistory(String(body.id || "")) });
+    }
+    if (pathname === "/api/cron/result") {
+      const out = await cron.getResult(String(body.id || ""), body.runId || null);
+      return sendJson(response, 200, out);
+    }
+    if (pathname === "/api/cron/connection-upsert") {
+      const conn = body.connection || {};
+      // Valida baseUrl pelo mesmo guard SSRF do proxy — rejeita host proibido
+      // no momento do save (na UI), não às 3h da manhã.
+      if (conn.baseUrl) normalizeBaseUrl(conn.baseUrl);
+      return sendJson(response, 200, { connection: cron.upsertConnection(conn) });
+    }
+    if (pathname === "/api/cron/connection-delete") {
+      return sendJson(response, 200, cron.deleteConnection(String(body.id || "")));
+    }
+    return sendJson(response, 404, { error: { message: "Endpoint cron não encontrado." } });
+  } catch (err) {
+    return sendJson(response, 400, { error: { message: err.message } });
+  }
+}
+
 /* ---------- server ---------- */
 
 const server = http.createServer((request, response) => {
@@ -1126,6 +1232,22 @@ function startServer() {
       ? "brave (via env) -> duckduckgo (fallback)"
       : "duckduckgo (default) — client pode enviar Brave key opcionalmente";
     console.log(`Web search: ${braveCfg}`);
+
+    // Cron: sempre carrega estado (UI gerencia mesmo desabilitado);
+    // o ticker só dispara quando CRON_ENABLED=true.
+    cron.start().then(() => {
+      const st = cron.getPublicState();
+      console.log(
+        `[cron] ${CRON_ENABLED ? "habilitado" : "desabilitado"} — ` +
+        `state-dir=${CRON_STATE_DIR} write-roots=[${FS_WRITE_ROOTS.join(", ")}] tarefas=${st.tasks.length}`
+      );
+      if (CRON_ENABLED && !FS_WRITE_ROOTS.length) {
+        console.warn("[cron] AVISO: CRON_ENABLED sem FS_WRITE_ROOTS — tarefas que escrevem (boletim/backup/rotação) vão falhar.");
+      }
+      if (CRON_ENABLED && LAN_BIND && !AUTH_ENABLED) {
+        console.warn("[cron] AVISO: cron ativo em LAN sem auth — superfície de saída/escrita exposta. Configure APP_AUTH_PASSWORD.");
+      }
+    }).catch((err) => console.error(`[cron] start falhou: ${err.message}`));
   });
 }
 
@@ -1147,50 +1269,61 @@ function startServer() {
  * - Em caso de falha, retorna `errorCode` semântico ("anti-bot", "no-results",
  *   "network", "auth") pra UI poder oferecer ação contextual.
  */
-async function handleToolsWebSearch(body, response, request) {
-  if (request && rateLimited(request)) {
-    return sendJson(response, 429, { error: "Muitas buscas, aguarde.", errorCode: "rate-limit" });
-  }
-  const query = typeof body.query === "string" ? body.query.trim() : "";
-  if (!query) return sendJson(response, 400, { error: "query obrigatória", errorCode: "bad-request" });
-  if (query.length > 500) return sendJson(response, 400, { error: "query excede 500 caracteres", errorCode: "bad-request" });
+/* Núcleo reutilizável da busca: tenta Brave (se houver key) e cai pro DDG.
+   Retorna { results, provider } ou lança Error com `.code` semântico
+   ("auth" | "bad-request" | "anti-bot" | "no-results" | "network").
+   Usado tanto pelo handler HTTP quanto pelas tarefas agendadas (boletim). */
+async function webSearchCore(query, braveApiKey) {
+  const q = typeof query === "string" ? query.trim() : "";
+  if (!q) { const e = new Error("query obrigatória"); e.code = "bad-request"; throw e; }
+  if (q.length > 500) { const e = new Error("query excede 500 caracteres"); e.code = "bad-request"; throw e; }
 
-  // Prefere a key vinda do client (Settings → Avançado). Fallback para env.
-  const braveKey = (typeof body.braveApiKey === "string" && body.braveApiKey.trim())
+  // Prefere a key vinda do caller (client). Fallback para env.
+  const braveKey = (typeof braveApiKey === "string" && braveApiKey.trim())
     || BRAVE_SEARCH_API_KEY_ENV
     || "";
 
   const errors = [];
   if (braveKey) {
     try {
-      const results = await fetchBraveResults(query, braveKey);
-      if (results.length) {
-        return sendJson(response, 200, { results, provider: "brave" });
-      }
+      const results = await fetchBraveResults(q, braveKey);
+      if (results.length) return { results, provider: "brave" };
       errors.push("brave: sem resultados");
     } catch (err) {
       console.error("[Search/brave] Fail:", err.message);
       errors.push(`brave: ${err.message}`);
-      // Se a key é inválida, não cai pro DDG (usuário precisa ver isso).
+      // Key inválida: não cai pro DDG (usuário precisa ver isso).
       if (err.code === "auth") {
-        return sendJson(response, 401, {
-          error: `Brave API key inválida ou expirada: ${err.message}`,
-          errorCode: "auth",
-        });
+        const e = new Error(`Brave API key inválida ou expirada: ${err.message}`);
+        e.code = "auth";
+        throw e;
       }
     }
   }
 
   try {
-    const results = await fetchDuckDuckGoResults(query);
-    return sendJson(response, 200, { results, provider: "duckduckgo" });
+    const results = await fetchDuckDuckGoResults(q);
+    return { results, provider: "duckduckgo" };
   } catch (err) {
     console.error("[Search/ddg] Fail:", err.message);
     errors.push(`duckduckgo: ${err.message}`);
-    return sendJson(response, 502, {
-      error: errors.join(" | "),
-      errorCode: err.code || "network",
-    });
+    const e = new Error(errors.join(" | "));
+    e.code = err.code || "network";
+    throw e;
+  }
+}
+
+async function handleToolsWebSearch(body, response, request) {
+  if (request && rateLimited(request)) {
+    return sendJson(response, 429, { error: "Muitas buscas, aguarde.", errorCode: "rate-limit" });
+  }
+  try {
+    const out = await webSearchCore(body.query, body.braveApiKey);
+    return sendJson(response, 200, out);
+  } catch (err) {
+    const code = err.code || "network";
+    const status = code === "auth" ? 401 : code === "bad-request" ? 400 : 502;
+    return sendJson(response, status, { error: err.message, errorCode: code });
   }
 }
 
@@ -1433,6 +1566,9 @@ module.exports = {
   isAllowedProxyTarget,
   safeExtractDdgUrl,
   rateLimited,
+  webSearchCore,
+  cron,
+  safeWriter,
   config: {
     HOST,
     PORT,
@@ -1447,5 +1583,10 @@ module.exports = {
     MAX_PDF_BYTES,
     RATE_LIMIT_MAX,
     RATE_LIMIT_WINDOW_MS,
+    CRON_ENABLED,
+    FS_WRITE_ROOTS,
+    CRON_STATE_DIR,
+    CRON_TZ,
+    MAX_WRITE_BYTES,
   },
 };

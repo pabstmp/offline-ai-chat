@@ -8,7 +8,7 @@ import { conversationStore } from "./modules/storage.js";
 import {
   normalizeBaseUrl, listModels, requestCompletion,
   formatFetchError, buildSamplingPayload,
-  extractToolCalls, extractFinishReason,
+  extractToolCalls, extractFinishReason, cronList,
 } from "./modules/api.js";
 import {
   getOpenAIToolDefinitions, executeTool,
@@ -46,7 +46,7 @@ import { templateStore, createTemplate, initConversationFromTemplate } from "./m
 import { ragIndicatorShouldShow, shouldShowServerDropdown, nextServerIndex, shouldAutoScroll, getScrollPosition } from "./modules/app-helpers.js";
 import { getBodyOverflowForModal } from "./modules/ui/chat-helpers.js";
 import { exportConversation } from "./modules/exporter.js";
-import { initNotifications, notifyResponseComplete } from "./modules/notifications.js";
+import { initNotifications, notifyResponseComplete, notifyDigestReady } from "./modules/notifications.js";
 import {
   initComparison, openComparison, closeComparison, isComparisonActive,
 } from "./modules/ui/comparison.js";
@@ -644,11 +644,15 @@ async function submitMessage(rawText) {
 
   const profile = getActiveProfile();
   let model = profile.defaultModel;
-  if (!model && runtime.models.length) model = runtime.models[0];
+  if (!model && runtime.models.length) {
+    const first = runtime.models[0];
+    model = typeof first === "string" ? first : first.id;
+  }
   if (!model) {
     try {
       await loadModels();
-      model = profile.defaultModel || runtime.models[0];
+      const first = runtime.models[0];
+      model = profile.defaultModel || (typeof first === "string" ? first : first?.id);
     } catch {}
   }
   if (!model) { toast("Modelo ausente.", "error"); openSettings("profiles"); return; }
@@ -1291,7 +1295,7 @@ async function generateABResponse(altProfile, message, node, body) {
   }
   messages.push({ role: "user", content: previousUser.content });
 
-  const model = altProfile.defaultModel || (runtime.models[0] || "");
+  const model = altProfile.defaultModel || ((typeof runtime.models[0] === "string" ? runtime.models[0] : runtime.models[0]?.id) || "");
   const payload = { messages, model, stream: false, ...sampling };
 
   // Show loading state in A/B layout
@@ -1680,12 +1684,12 @@ function buildPaletteCommands() {
       run: () => { store.set("connection.activeServerId", s.id); loadModels().catch(() => {}); },
     })),
     ...runtime.models.map((m) => ({
-      label: `Modelo: ${m}`, group: "Modelos",
+      label: `Modelo: ${typeof m === "string" ? m : (m.name || m.id)}`, group: "Modelos",
       run: () => {
         const profile = getActiveProfile();
-        profile.defaultModel = m;
+        profile.defaultModel = typeof m === "string" ? m : m.id;
         refreshChips();
-        toast(`Modelo: ${m}`, "info");
+        toast(`Modelo: ${typeof m === "string" ? m : (m.name || m.id)}`, "info");
       },
     })),
   ];
@@ -1868,6 +1872,12 @@ async function init() {
   // Notifications
   initNotifications({ store, toastFn: toast });
 
+  // Poll leve: avisa quando uma tarefa agendada (boletim) conclui em background.
+  // Só dispara se o motor estiver ativo no servidor e o usuário tiver habilitado.
+  // lastSeenRunAt é a marca d'água; no 1º poll só estabelece baseline (sem avisar
+  // execuções antigas).
+  startCronCompletionPoll(store);
+
   // stop button
   elements.stopButton.addEventListener("click", () => runtime.abortController?.abort());
 
@@ -1978,6 +1988,38 @@ init().catch((err) => {
   console.error(err);
   toast(`Erro: ${err.message}`, "error", 6000);
 });
+
+/* Poll de conclusão de tarefas agendadas. Compara o lastFinishAt das tarefas
+   contra a marca d'água store("cron").lastSeenRunAt e dispara notifyDigestReady
+   para execuções OK novas. Intervalo de 60s; tolerante a falhas (servidor pode
+   estar reiniciando). Não dispara nada no 1º poll (só estabelece baseline). */
+function startCronCompletionPoll(store) {
+  let primed = false;
+  async function poll() {
+    const pref = store.get("cron") || {};
+    if (pref.notifyOnCompletion === false) return;
+    let data;
+    try { data = await cronList(); } catch { return; }
+    if (!data || !data.enabled || !Array.isArray(data.tasks)) return;
+
+    let maxFinish = Number(pref.lastSeenRunAt) || 0;
+    const fresh = [];
+    for (const t of data.tasks) {
+      const fin = t.state && t.state.lastFinishAt ? t.state.lastFinishAt : 0;
+      if (fin > maxFinish) maxFinish = fin;
+      if (primed && fin > (Number(pref.lastSeenRunAt) || 0) && t.state.lastStatus === "ok" && t.options && t.options.notify) {
+        fresh.push(t.name);
+      }
+    }
+    for (const name of fresh) notifyDigestReady(name);
+    if (maxFinish > (Number(pref.lastSeenRunAt) || 0)) {
+      store.set("cron.lastSeenRunAt", maxFinish);
+    }
+    primed = true;
+  }
+  poll();
+  setInterval(poll, 60_000);
+}
 
 // Service worker registrado aqui (em vez de inline em index.html) para
 // permitir CSP estrita: script-src 'self' sem 'unsafe-inline'.

@@ -14,6 +14,7 @@ import {
   resolveServerForModel,
   buildConversationFromComparison,
 } from "./comparison-helpers.js";
+import { formatPricePerM } from "../model-catalog.js";
 
 let isActive = false;
 let store = null;
@@ -265,7 +266,10 @@ function populateModelSelect(select) {
   const conn = store.get("connection");
 
   if (models.length > 0 && modelToServerId.size === 0) {
-    models.forEach(m => modelToServerId.set(m, conn.activeServerId));
+    models.forEach(m => {
+      const id = typeof m === "string" ? m : m.id;
+      modelToServerId.set(id, conn.activeServerId);
+    });
   }
 
   const groups = groupModelsByServer(models, conn.servers, modelToServerId);
@@ -275,10 +279,32 @@ function populateModelSelect(select) {
   groups.forEach(g => {
     const optgroup = document.createElement("optgroup");
     optgroup.label = g.serverNickname;
-    g.models.forEach(m => {
+
+    // Ordena modelos dentro do grupo: primeiro gratuitos, depois pagos.
+    const sortedModels = g.models.slice().sort((a, b) => {
+      const isFreeA = typeof a === "string" ? true : a.isFree;
+      const isFreeB = typeof b === "string" ? true : b.isFree;
+      if (isFreeA !== isFreeB) return isFreeA ? -1 : 1;
+      const nameA = typeof a === "string" ? a : a.name || a.id;
+      const nameB = typeof b === "string" ? b : b.name || b.id;
+      return nameA.localeCompare(nameB);
+    });
+
+    sortedModels.forEach(m => {
       const opt = document.createElement("option");
-      opt.value = m;
-      opt.textContent = m;
+      const id = typeof m === "string" ? m : m.id;
+      let label = typeof m === "string" ? m : m.name || m.id;
+      
+      if (typeof m === "object" && m.pricing) {
+        if (m.isFree) {
+          label = `🎁 ${label} (Gratuito)`;
+        } else {
+          const price = formatPricePerM(m.pricing);
+          label = price ? `💰 ${label} ($${price})` : `💰 ${label}`;
+        }
+      }
+      opt.value = id;
+      opt.textContent = label;
       optgroup.appendChild(opt);
     });
     select.appendChild(optgroup);

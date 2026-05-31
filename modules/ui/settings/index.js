@@ -4,7 +4,7 @@
    panel; helpers (field, section, input, etc.) also live there. */
 
 import { applyAppearance } from "../../theme.js";
-import { state, setModelOptions, section, field, select, button } from "./_shared.js";
+import { state, setModelOptions, populateModelSelectWithOptions, section, field, select, button } from "./_shared.js";
 
 export { setModelOptions };
 import { panelServer } from "./server.js";
@@ -16,6 +16,7 @@ import { panelShortcuts } from "./shortcuts.js";
 import { panelWorkspace } from "./workspace.js";
 import { panelAdvanced } from "./advanced.js";
 import { panelTools } from "./tools.js";
+import { panelCron } from "./cron.js";
 
 const ICONS = {
   basic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="drawer-tab-icon"><path d="M4 13a8 8 0 0 1 16 0"/><path d="M12 3v4"/><path d="M5.6 6.6l2.8 2.8"/><path d="M18.4 6.6l-2.8 2.8"/><path d="M8 17h8"/></svg>',
@@ -28,6 +29,7 @@ const ICONS = {
   workspace: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="drawer-tab-icon"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>',
   advanced: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="drawer-tab-icon"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
   tools: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="drawer-tab-icon"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.77 3.77z"/></svg>',
+  cron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="drawer-tab-icon"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
 };
 
 const TABS = [
@@ -40,6 +42,7 @@ const TABS = [
   ["behavior", "Comportamento"],
   ["shortcuts", "Atalhos"],
   ["tools", "Ferramentas"],
+  ["cron", "Tarefas"],
   ["advanced", "Avançado"],
 ];
 
@@ -155,12 +158,12 @@ function panelBasic() {
     const s = document.createElement("select");
     s.style.flex = "1";
     const models = elements.modelOptions || [];
-    s.appendChild(new Option(models.length ? "Selecione um modelo" : "Conecte o servidor para listar modelos", ""));
-    for (const m of models) s.appendChild(new Option(m, m));
-    if (activeProfile?.defaultModel && !models.includes(activeProfile.defaultModel)) {
+    populateModelSelectWithOptions(s, models, activeProfile?.defaultModel || "");
+    const modelIds = models.map(m => typeof m === "string" ? m : m.id);
+    if (activeProfile?.defaultModel && !modelIds.includes(activeProfile.defaultModel)) {
       s.appendChild(new Option(activeProfile.defaultModel, activeProfile.defaultModel));
+      s.value = activeProfile.defaultModel;
     }
-    s.value = activeProfile?.defaultModel || "";
     s.addEventListener("change", () => {
       if (!activeProfile) return;
       activeProfile.defaultModel = s.value;
@@ -220,6 +223,7 @@ function rebuildPanel(tabId) {
     case "shortcuts": panelShortcuts(); break;
     case "workspace": panelWorkspace(); break;
     case "tools": state.elements.settingsBody.appendChild(panelTools({ store: state.store, onChange: state.onChange })); break;
+    case "cron": panelCron(); break;
     case "advanced": panelAdvanced(); break;
   }
 }

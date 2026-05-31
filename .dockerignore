@@ -6,3 +6,5 @@ server.out.log
 Dockerfile
 docker-compose.yml
 .dockerignore
+# Estado local do cron (pode conter API keys em texto) — nunca bakear na imagem.
+data

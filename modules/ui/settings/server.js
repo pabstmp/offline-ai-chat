@@ -40,11 +40,15 @@ export function panelServer() {
       onchange: (e) => { server.baseUrl = e.target.value.trim(); onChange(); },
     }), "IP, host ou URL completa. Sem caminho, usa /v1."));
 
+    const isOr = server.baseUrl && server.baseUrl.includes("openrouter.ai");
+    const keyLabel = isOr ? "API key (OpenRouter)" : "API key (opcional)";
+    const keyPlaceholder = isOr ? "sk-or-... (obrigatório para chat)" : "vazio no LM Studio";
+
     const apiKeyForm = document.createElement("form");
     apiKeyForm.setAttribute("autocomplete", "off");
     apiKeyForm.addEventListener("submit", (e) => e.preventDefault());
-    apiKeyForm.appendChild(field("API key (opcional)", input({
-      type: "password", value: server.apiKey || "", placeholder: "vazio no LM Studio",
+    apiKeyForm.appendChild(field(keyLabel, input({
+      type: "password", value: server.apiKey || "", placeholder: keyPlaceholder,
       autocomplete: "off",
       onchange: (e) => { server.apiKey = e.target.value; onChange(); },
     })));
@@ -95,7 +99,11 @@ export function panelServer() {
     sec.appendChild(c);
   }
 
-  sec.appendChild(button("+ Adicionar servidor", "btn-secondary", () => {
+  const addRow = document.createElement("div");
+  addRow.className = "row";
+  addRow.style.gap = "var(--s-2)";
+
+  addRow.appendChild(button("+ Adicionar servidor", "btn-secondary", () => {
     const id = `server-${Date.now()}`;
     store.set("connection.servers", [...conn.servers, {
       id, nickname: "Novo servidor", baseUrl: "", apiKey: "",
@@ -105,31 +113,59 @@ export function panelServer() {
     rebuildPanel("server");
   }));
 
+  addRow.appendChild(button("+ Adicionar OpenRouter", "btn-secondary", () => {
+    const id = `server-${Date.now()}`;
+    store.set("connection.servers", [...conn.servers, {
+      id, nickname: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "",
+      headers: {}, timeoutMs: 60000, retry: { count: 0, backoffMs: 1000 },
+    }]);
+    store.set("connection.activeServerId", id);
+    onChange();
+    rebuildPanel("server");
+    toast("OpenRouter ativado — cole sua API key no card abaixo.", "info");
+  }));
+
+  sec.appendChild(addRow);
+
   elements.settingsBody.appendChild(sec);
 
-  const modelsSec = section("Modelos no servidor LM Studio");
-  const modelsHelp = document.createElement("p");
-  modelsHelp.className = "field-help";
-  modelsHelp.textContent = "Veja modelos carregados e ajuste o context length quando precisar.";
-  modelsSec.appendChild(modelsHelp);
+  const activeServer = conn.servers.find((s) => s.id === conn.activeServerId) || conn.servers[0];
+  const isOpenRouter = activeServer?.baseUrl?.includes("openrouter.ai");
 
-  const modelsContainer = document.createElement("div");
-  modelsContainer.dataset.role = "lm-models";
-  modelsContainer.style.display = "flex";
-  modelsContainer.style.flexDirection = "column";
-  modelsContainer.style.gap = "var(--s-2)";
-  const loading = document.createElement("p");
-  loading.className = "field-help";
-  loading.textContent = "Carregando modelos do servidor...";
-  modelsContainer.appendChild(loading);
-  modelsSec.appendChild(modelsContainer);
+  if (isOpenRouter) {
+    const modelsSec = section("OpenRouter");
+    const help = document.createElement("p");
+    help.className = "field-help";
+    help.innerHTML = "☁️ <strong>Servidor em nuvem ativo</strong>. Os modelos são carregados sob demanda.<br><br>" +
+      "Escolha ou digite um modelo padrão na aba <strong>Perfis & Inferência</strong> " +
+      "(ex: <code>google/gemini-2.5-flash</code>, <code>deepseek/deepseek-r1</code>, <code>anthropic/claude-3.5-sonnet</code>).";
+    modelsSec.appendChild(help);
+    elements.settingsBody.appendChild(modelsSec);
+  } else {
+    const modelsSec = section("Modelos no servidor LM Studio");
+    const modelsHelp = document.createElement("p");
+    modelsHelp.className = "field-help";
+    modelsHelp.textContent = "Veja modelos carregados e ajuste o context length quando precisar.";
+    modelsSec.appendChild(modelsHelp);
 
-  const refreshBtn = button("↻ Atualizar lista", "btn-ghost", () => populateLmModels(modelsContainer));
-  modelsSec.appendChild(refreshBtn);
+    const modelsContainer = document.createElement("div");
+    modelsContainer.dataset.role = "lm-models";
+    modelsContainer.style.display = "flex";
+    modelsContainer.style.flexDirection = "column";
+    modelsContainer.style.gap = "var(--s-2)";
+    const loading = document.createElement("p");
+    loading.className = "field-help";
+    loading.textContent = "Carregando modelos do servidor...";
+    modelsContainer.appendChild(loading);
+    modelsSec.appendChild(modelsContainer);
 
-  populateLmModels(modelsContainer);
+    const refreshBtn = button("↻ Atualizar lista", "btn-ghost", () => populateLmModels(modelsContainer));
+    modelsSec.appendChild(refreshBtn);
 
-  elements.settingsBody.appendChild(modelsSec);
+    populateLmModels(modelsContainer);
+
+    elements.settingsBody.appendChild(modelsSec);
+  }
 }
 
 async function populateLmModels(container) {

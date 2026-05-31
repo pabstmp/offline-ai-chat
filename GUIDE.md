@@ -20,6 +20,7 @@ Manual de uso completo. Cobre cada tela, cada parâmetro, cada fluxo. Pensado pr
 10. [Aba: Atalhos](#10-aba-atalhos)
 11. [Aba: Workspace (contexto de código)](#11-aba-workspace-contexto-de-código)
 12. [Aba: Avançado](#12-aba-avançado)
+12.1. [Aba: Tarefas (agendamentos)](#121-aba-tarefas-agendamentos)
 13. [Histórico de conversas](#13-histórico-de-conversas)
 14. [Composer (campo de mensagem)](#14-composer-campo-de-mensagem)
 15. [Command Palette](#15-command-palette)
@@ -550,6 +551,43 @@ Ao digitar `/explain` e aceitar, o body substitui o texto.
 
 ---
 
+## 12.1 Aba: Tarefas (agendamentos)
+
+Tarefas que rodam **no servidor**, em horário marcado, mesmo com o navegador fechado. A vitrine é o **boletim de busca web**: o servidor pesquisa termos que você definiu, pede pra um modelo resumir, e salva um markdown datado que você lê depois.
+
+> ⚠️ **Precisa ser ligado no servidor.** Por segurança, o motor vem **desligado**. Você configura tudo pela aba, mas nada dispara até definir `CRON_ENABLED=true` (e `FS_WRITE_ROOTS`) nas variáveis de ambiente / `docker-compose.yml`. A própria aba mostra o snippet quando está desligado.
+
+### Por que "conexões" separadas?
+
+As tarefas rodam sem o navegador, então **não enxergam** o servidor de chat que você configurou no localStorage. Por isso você cria uma **Conexão LLM** própria pra elas:
+
+- Aponte pro **LM Studio local** (`http://localhost:1234/v1`) — funciona se ele estiver ligado no horário da tarefa.
+- Ou pra um **endpoint sempre-online** tipo OpenRouter — recomendado pra boletim de madrugada (LM Studio costuma estar desligado às 8h). Botão **"Copiar do servidor de chat"** pré-preenche a partir do seu servidor atual.
+- A API key fica salva no servidor. Pra não deixar segredo em texto, preencha **"API key via env"** com o nome de uma variável de ambiente (ex: `OPENROUTER_KEY`) em vez da chave literal.
+
+### Criando um boletim
+
+1. Crie uma **Conexão LLM** (seção de cima).
+2. **+ Nova tarefa** → tipo **Boletim de busca web**.
+3. **Buscas**: uma por linha (ex: `novidades inteligência artificial`).
+4. **Conexão / Modelo**: escolha a conexão e, opcional, um modelo específico.
+5. **Pasta de saída**: uma das pastas liberadas em `FS_WRITE_ROOTS` (no Docker, `/app/data/output`). **Subpasta**: ex `boletins`.
+6. **Frequência**: *Diariamente às 08:00*, *Semanalmente*, *De hora em hora*, ou **Avançado (cron)** pra expressão de 5 campos. Defina o **fuso horário** (ex: `America/Sao_Paulo`) pra "8h" ser 8h da sua região.
+7. Marque **Ativa** e salve.
+
+Use **Executar agora** pra testar sem esperar o horário, e **Ver resultado** pra ler o último boletim renderizado. Se marcou "Notificar", o app avisa quando um boletim novo fica pronto (precisa permitir notificações do navegador).
+
+### Outras tarefas
+
+- **Rotação de arquivos/logs**: trunca/arquiva arquivos que passaram de um tamanho (útil em deploy nativo que redireciona `stdout`/`stderr` pra arquivo, ou pra podar boletins antigos). No Docker os logs do container já são rotacionados pelo runtime — aqui serve pra limpar a pasta de saída.
+- **Backup de estado do servidor**: copia o `cron-state.json` (suas tarefas/conexões) e arquivos que você listar, com gzip. ⚠️ Conversas, perfis e configurações ficam **no navegador** e não são vistas pelo servidor — pra essas, use **Avançado → Exportar configurações** e o backup do histórico (seção 18).
+
+### Onde os arquivos ficam
+
+Tudo é gravado **só** nas pastas de `FS_WRITE_ROOTS`. No Docker isso é o volume `cron-data` (`/app/data`), que sobrevive a restart. O mount do seu disco (`/host/c`) é somente-leitura de propósito — o app nunca escreve nele.
+
+---
+
 ## 13. Histórico de conversas
 
 ### Salvamento automático
@@ -891,3 +929,17 @@ localStorage["offline-ai-chat:conversations:v1"] = [
 - Console do browser: erros e (com debug on) payloads das requests
 - Network tab: o que realmente foi enviado pro LM Studio
 - LM Studio logs: erros do lado do servidor LLM
+
+## Usando o OpenRouter (modelos na nuvem)
+
+Além do LM Studio local, dá pra conectar o OpenRouter (https://openrouter.ai) e usar modelos na nuvem (Gemini, Claude, DeepSeek, Llama, etc.) — vários com tier gratuito.
+
+1. Crie uma conta em openrouter.ai e gere uma API key (`sk-or-...`).
+2. Em **Configurações → Servidor**, clique em **"+ Adicionar OpenRouter"**.
+3. Cole sua API key no campo **API key (OpenRouter)**.
+4. Em **Configurações → Perfis & Inferência**, escolha o **modelo padrão**. O seletor agrupa em:
+   - 🎁 **Gratuitos** — custo zero.
+   - 💰 **Pagos** — com preço por milhão de tokens (entrada / saída), ex.: `$0.15 / $0.60 p/ M`.
+5. Pronto: chat e modo de comparação passam a usar o OpenRouter.
+
+> Sua API key fica apenas no navegador (localStorage) e é enviada ao OpenRouter pelo proxy local — nunca a terceiros.

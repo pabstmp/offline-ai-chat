@@ -18,13 +18,22 @@ services:
       OCR_CACHE_DIR: /app/.cache/tesseract
       MAX_FILE_BYTES: ${MAX_FILE_BYTES:-262144}
       MAX_PDF_BYTES: ${MAX_PDF_BYTES:-33554432}
+
+      # Tarefas agendadas (opt-in). Em LAN, o boletim só consegue chamar um
+      # endpoint que esteja em ALLOWED_LM_HOSTS (mesma política SSRF do proxy).
+      CRON_ENABLED: ${CRON_ENABLED:-false}
+      FS_WRITE_ROOTS: /app/data/output
+      CRON_STATE_DIR: /app/data
+      CRON_TZ: ${CRON_TZ:-UTC}
     ports:
       - "${APP_BIND:-0.0.0.0}:${APP_PORT:-8080}:8080"
     volumes:
       # Mount exactly one shared workspace read-only.
       - "${LAN_WORKSPACE_HOST_PATH:?Run npm run lan:setup or set LAN_WORKSPACE_HOST_PATH in .env.lan}:/workspace:ro"
       - tesseract-cache-lan:/app/.cache/tesseract
+      - cron-data-lan:/app/data
     restart: unless-stopped
 
 volumes:
   tesseract-cache-lan:
+  cron-data-lan:

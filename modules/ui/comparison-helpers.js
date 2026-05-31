@@ -41,7 +41,8 @@ export function groupModelsByServer(models, servers, modelToServerId) {
 
   const groups = new Map();
 
-  for (const mId of models) {
+  for (const m of models) {
+    const mId = typeof m === "string" ? m : m.id;
     const sId = modelToServerId.get(mId);
     const server = servers.find((s) => s.id === sId) || servers[0];
     const sKey = server ? server.id : "unknown";
@@ -53,7 +54,7 @@ export function groupModelsByServer(models, servers, modelToServerId) {
         models: [],
       });
     }
-    groups.get(sKey).models.push(mId);
+    groups.get(sKey).models.push(m);
   }
 
   return Array.from(groups.values());

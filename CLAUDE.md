@@ -38,7 +38,12 @@ Servidor em `http://localhost:8080`. Não há build step.
 /index.html              shell HTML (~250 linhas)
 /styles.css              tokens light+dark + componentes (~1200 linhas)
 /app.js                  entry, orquestra módulos
-/server.js               proxy + endpoints fs + pdfjs
+/server.js               proxy + endpoints fs + pdfjs + router /api/cron/*
+/server-lib/             módulos server-side CommonJS (zero-dep, testáveis via DI)
+  cron-expr.js           parser cron 5 campos + presets + timezone (Intl)
+  safe-write.js          escrita segura (FS_WRITE_ROOTS, atômica, gzip)
+  llm.js                 callLLMOnce não-streaming (in-process)
+  cron-engine.js         scheduler (1 ticker) + TASK_REGISTRY + persistência
 /sw.js                   service worker (cache-first shell)
 /manifest.webmanifest    PWA
 /package.json            dep pdfjs-dist
@@ -58,7 +63,8 @@ Servidor em `http://localhost:8080`. Não há build step.
     chat.js              Mensagens, ações, streaming, reasoning block
     composer.js          Auto-resize, slash, token estimator
     sidebar.js           Histórico
-    settings.js          Drawer 8 abas (~1500 linhas)
+    settings/cron.js     Aba "Tarefas": conexões, tarefas, picker de agenda, viewer
+    settings.js          Drawer de abas (~1500 linhas)
     palette.js           Command palette
     workspace.js         File tree + context panel
     toasts.js
@@ -94,6 +100,14 @@ Servidor em `http://localhost:8080`. Não há build step.
 | `/api/lm/models-info` | POST | Proxy `/api/v0/models` (LM Studio extended) |
 | `/api/lm/load-model` | POST | Proxy `/api/v1/models/load` (carrega com ctx custom) |
 | `/api/lm/unload-model` | POST | Proxy `/api/v1/models/unload` |
+| `/api/cron/list` | POST | Estado do cron (tarefas+conexões, apiKey redigida, registry) |
+| `/api/cron/upsert` | POST | Cria/edita tarefa (valida cron + opções) |
+| `/api/cron/delete` | POST | Remove tarefa + histórico |
+| `/api/cron/run-now` | POST | Dispara tarefa manualmente (assíncrono) |
+| `/api/cron/history` | POST | Ring buffer de execuções da tarefa |
+| `/api/cron/result` | POST | Relê o markdown gerado (revalida path em FS_WRITE_ROOTS) |
+| `/api/cron/connection-upsert` | POST | Cria/edita conexão LLM headless (valida baseUrl via SSRF guard) |
+| `/api/cron/connection-delete` | POST | Remove conexão |
 | `/*` | GET | Static com ETag + Cache-Control |
 
 Auto-translate de paths Windows → `/host/c/...` quando rodando em container Linux (ver `translateWindowsPath` em `server.js`).
@@ -114,8 +128,13 @@ localStorage["offline-ai-chat:v2"] = {
   advanced: { streaming, debugMode, promptLibrary[], slashCommands[] },
   workspace: { sources[], activeSourceId, ignorePatterns, maxFileBytes, maxTotalBytes },
   rag: { enabled, embeddingModel, autoStrategy, chunkChars, chunkOverlap, topK, maxPerFile, batchSize, activeForNextMessage },
+  cron: { notifyOnCompletion, lastSeenRunAt },   // SÓ prefs de UI — tarefas vivem no servidor (cron-state.json)
   hardwareOverride: null | { ... },
 }
+
+// Servidor (não-browser): CRON_STATE_DIR/cron-state.json
+// { version, connections:[{id,nickname,baseUrl,apiKey|apiKeyEnv,model}],
+//   tasks:[{id,type,name,enabled,schedule,options,policy,state}], history:{ [taskId]: RunRecord[] } }
 
 localStorage["offline-ai-chat:conversations:v1"] = [
   { id, title, createdAt, updatedAt, profileId, serverId, model, messages: [{ role, content, reasoning?, ts, id }] }
@@ -162,6 +181,21 @@ Pra deploy single-user local, não exige whitelist. Se `WORKSPACE_ROOTS` env vaz
 ### 7. LAN hardening
 Native Node usa `HOST=127.0.0.1` por default. Quando `HOST` expõe LAN (`0.0.0.0`, `::` ou IP não-loopback), o server bloqueia `/api/fs/*` se `WORKSPACE_ROOTS` estiver vazio e o proxy LM Studio só aceita loopback se `ALLOWED_LM_HOSTS` estiver vazio. `APP_AUTH_PASSWORD`/`APP_AUTH_TOKEN` liga Basic Auth para UI + API. Docker Compose local publica em `127.0.0.1:8080`; deploy LAN deve usar preferencialmente `npm run lan:setup` + `npm run lan:up`, que geram `.env.lan` e usam `docker-compose.lan.yml`.
 
+### 8. OpenRouter (preset de nuvem + headers)
+Botão "+ Adicionar OpenRouter" em Configurações → Servidor cria um servidor com `baseUrl = https://openrouter.ai/api/v1`. O proxy (`server.js`) injeta `HTTP-Referer` e `X-Title` quando o host é OpenRouter — match exato via `isOpenRouterHost`, não substring. `listModels` (`api.js`) devolve objetos `{ id, name, pricing, isFree }` (ainda aceita strings puras); `isFree` = prompt e completion ambos 0. Os seletores usam `populateModelSelectWithOptions` (`settings/_shared.js`) e agrupam em 🎁 Gratuitos / 💰 Pagos, com preço por milhão de tokens via `formatPricePerM` (`model-catalog.js`). No branch LM Studio a aba Servidor mostra os controles de context length; no branch OpenRouter, esconde e mostra dica de nuvem.
+
+### 9. Cron engine (tarefas agendadas) — `server-lib/`
+Motor server-side genérico e extensível, **desligado por default** (`CRON_ENABLED`, opt-in). Vive em `server-lib/` (CommonJS, zero-dep, DI pra ser testável). `server.js` injeta seus próprios helpers via `createCronEngine({...taskDeps})` — `server-lib/` nunca importa `server.js` (sem require circular); o guard SSRF (`isAllowedProxyTarget`) continua fonte única.
+
+Pontos-chave:
+- **Fonte de verdade dupla, nunca mesclada**: o browser (`localStorage`) possui conversas/perfis/servidores de chat; o servidor (`cron-state.json` em `CRON_STATE_DIR`) possui tarefas/conexões/histórico. A aba "Tarefas" é um **editor remoto** via `/api/cron/*`, não um espelho. Por isso as tarefas NÃO entram no `schema.js` — só prefs de UI (`cron: { notifyOnCompletion, lastSeenRunAt }`).
+- **Conexões LLM headless próprias**: o cron roda sem browser, então não lê o `baseUrl`/`apiKey` do localStorage. Cada conexão tem `apiKey` (texto no state file) OU `apiKeyEnv` (nome de env var, mais seguro). Segredos são redigidos em `getPublicState`/respostas; `upsert` aceita sentinela `"***"` = manter chave.
+- **1 ticker único** (`setInterval` de 30s) avalia todas as tarefas — não 1 timer por tarefa. `tick(now)` é função pura de `(now, tasks)`: testável, reconciliável após restart. Garantias: overlap=skip (sem backlog), timeout por `AbortController`, catch-up 1x no boot, disjuntor após N falhas, `nextRunAfter` com horizonte de 366 dias.
+- **Cron real + presets + timezone**: `cron-expr.js` parseia 5 campos (semântica Vixie: DOM+DOW restritos = OR) e avalia no `tz` via `Intl.DateTimeFormat`. Presets da UI compilam pra cron.
+- **Escrita segura**: `FS_WRITE_ROOTS` é whitelist SEPARADA de `WORKSPACE_ROOTS` (que é `:ro` no Docker). `resolveSafeWritePath` espelha o guard de `resolveSafePath`, fail-closed se vazio.
+- **callLLMOnce** (`llm.js`): o proxy era pipe-only; este coleta o body e devolve `{content, reasoning, usage}`. Reusa `webSearchCore` (núcleo extraído de `handleToolsWebSearch`).
+- **3 tarefas no registry**: `web_search_digest` (busca multi-query → LLM → markdown datado, com dedup e diff "o que é novo"), `log_rotation` (rotaciona arquivos configuráveis dentro de `FS_WRITE_ROOTS`), `workspace_backup` (copia cron-state + fontes, gzip). Novo tipo = nova entrada no `TASK_REGISTRY`.
+
 ---
 
 ## Gotchas conhecidos
@@ -182,6 +216,14 @@ Native Node usa `HOST=127.0.0.1` por default. Quando `HOST` expõe LAN (`0.0.0.0
 - Conversas antigas (anteriores ao bug fix de `assistantMsg.push`) **só têm perguntas do usuário, sem respostas**. Não dá pra recuperar.
 - Chunks indexados ficam invalidados quando `chunkChars` muda. Re-indexar é necessário.
 - Quando `embeddingModel` na config diverge do `meta.embeddingModel` da fonte indexada, `retrieve` rejeita com erro claro. Pill RAG mostra "modelo diferente".
+
+### Cron / tarefas agendadas
+- **`CRON_ENABLED` desligado por default**. Sem ele, a UI gerencia tarefas mas nada dispara. O ticker só roda quando `true`.
+- **`FS_WRITE_ROOTS` vazio = tarefas que escrevem falham** (fail-closed). O mount `/host/c:ro` é read-only de propósito; a saída do cron vai pro volume `cron-data` (`/app/data`).
+- **`cron-state.json` guarda `apiKey` em texto** (sem DB). Está no `.gitignore`/`.dockerignore`. Pra evitar segredo em repouso, use `apiKeyEnv` na conexão (referencia uma env var).
+- **Boletim de madrugada precisa de endpoint always-on**: LM Studio desligado às 3h = a tarefa falha. Aponte a conexão pra OpenRouter (em LAN, exige adicionar `openrouter.ai` em `ALLOWED_LM_HOSTS`, mesma política SSRF do proxy).
+- **Seed só na 1ª execução**: depois que `cron-state.json` existe, `CRON_SEED_FILE`/env são ignorados (UI vence). Redeploy não apaga tarefas criadas na UI.
+- Mudou env mas o ticker não reflete? `CRON_ENABLED`/`CRON_TZ` são lidos no boot — reinicie o processo.
 
 ---
 
@@ -292,6 +334,7 @@ Funções que retornam DOM elements. Helpers em `settings.js`: `field()`, `secti
 12. **LM Studio extended API** — load models com ctx custom direto da UI
 13. **Bugfix crítico**: `assistantMsg` agora é pushed em `currentConversation.messages`. Antes respostas não eram salvas (só perguntas)
 14. **Auto-translate paths Windows → /host/c**
+15. **Cron engine** (`server-lib/`) — tarefas agendadas extensíveis: scheduler de 1 ticker, cron real + presets + tz, conexões LLM headless, escrita segura (FS_WRITE_ROOTS), aba "Tarefas" na UI. Tarefa-vitrine: boletim de busca web (busca → LLM → markdown).
 
 ---
 

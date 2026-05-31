@@ -79,7 +79,25 @@ export function notifyResponseComplete() {
   const pref = _store.get("behavior")?.notifications;
   if (!shouldNotify(document.visibilityState, Notification.permission, pref)) return;
 
-  // Close previous notification
+  // A limpeza (fechar anterior + limpar timer) vive em fireNotification — fonte única.
+  fireNotification("O modelo terminou de responder.");
+}
+
+/**
+ * Notifica que uma tarefa agendada (ex: boletim) gerou novo resultado.
+ * Mesmo gate de privacidade do notifyResponseComplete (aba oculta + permissão +
+ * preferência habilitada). Corpo genérico — não vaza conteúdo do boletim.
+ */
+export function notifyDigestReady(taskName) {
+  if (!isSupported() || !_store) return;
+  const pref = _store.get("behavior")?.notifications;
+  if (!shouldNotify(document.visibilityState, Notification.permission, pref)) return;
+  const label = taskName ? `Tarefa agendada concluída: ${taskName}` : "Uma tarefa agendada foi concluída.";
+  fireNotification(label);
+}
+
+/* Cria a notificação OS (fecha a anterior, auto-close em 8s). */
+function fireNotification(body) {
   if (activeNotification) {
     try { activeNotification.close(); } catch {}
     activeNotification = null;
@@ -91,7 +109,7 @@ export function notifyResponseComplete() {
 
   try {
     const n = new Notification("Offline AI Chat", {
-      body: "O modelo terminou de responder.",
+      body,
       icon: "/favicon.ico",
     });
 

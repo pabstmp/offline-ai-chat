@@ -19,6 +19,7 @@ const files = [
   path.join(ROOT, "server.js"),
   ...walk(path.join(ROOT, "scripts")),
   ...walk(path.join(ROOT, "modules")),
+  ...walk(path.join(ROOT, "server-lib")),
 ];
 
 let failed = 0;

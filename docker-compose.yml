@@ -25,6 +25,14 @@ services:
       # BRAVE_SEARCH_API_KEY: "BSA_seu_token_aqui"
       # O usuário também pode configurar a chave via UI em
       # Configurações → Avançado → Busca web (preferida sobre o env).
+      #
+      # Tarefas agendadas (cron engine) — DESLIGADO por default. Para ativar:
+      # CRON_ENABLED: "true"
+      # FS_WRITE_ROOTS: /app/data/output   # única pasta gravável (NÃO use o mount :ro abaixo)
+      # CRON_STATE_DIR: /app/data          # onde vive cron-state.json (volume nomeado)
+      # CRON_TZ: America/Sao_Paulo          # fuso pros horários "8h" etc.
+      # CRON_MAX_TIMEOUT_MS: "300000"
+      # As tarefas/conexões são gerenciadas pela UI (Configurações → Tarefas).
     ports:
       - "127.0.0.1:8080:8080"
     # Bind mount the host filesystem read-only so server.js can read files
@@ -45,7 +53,12 @@ services:
       # otherwise the first OCR run after a restart re-downloads the
       # ~17MB language packs from the CDN.
       - tesseract-cache:/app/.cache/tesseract
+      # Persiste o estado do cron (cron-state.json) + saída das tarefas
+      # (boletins, backups) entre restarts/recreate. É a ÚNICA pasta gravável —
+      # o mount /host/c acima é :ro de propósito, então a saída do cron vai aqui.
+      - cron-data:/app/data
     restart: unless-stopped
 
 volumes:
   tesseract-cache:
+  cron-data:

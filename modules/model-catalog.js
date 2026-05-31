@@ -501,3 +501,13 @@ export const CATEGORIES = [
   { id: "code", label: "Programação" },
   { id: "embedding", label: "Embeddings (pra RAG)" },
 ];
+
+/* Formata pricing do OpenRouter (USD por token) como "$X / $Y p/ M" (por milhao
+   de tokens). Retorna "" quando nao ha pricing numerico valido. */
+export function formatPricePerM(pricing) {
+  if (!pricing) return "";
+  const prompt = Number(pricing.prompt) * 1e6;
+  const completion = Number(pricing.completion) * 1e6;
+  if (!Number.isFinite(prompt) || !Number.isFinite(completion)) return "";
+  return `$${prompt.toFixed(2)} / $${completion.toFixed(2)} p/ M`;
+}

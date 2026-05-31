@@ -80,7 +80,20 @@ export async function listModels({ baseUrl, apiKey, timeoutMs = 12000 }) {
     });
     if (!response.ok) throw new Error(await readError(response));
     const data = await response.json();
-    return Array.isArray(data.data) ? data.data.map((m) => m.id).filter(Boolean) : [];
+    return Array.isArray(data?.data) ? data.data.map((m) => {
+      if (!m) return null;
+      if (typeof m === "string") {
+        return { id: m, name: m, pricing: null, isFree: true };
+      }
+      const prompt = Number(m.pricing?.prompt) || 0;
+      const completion = Number(m.pricing?.completion) || 0;
+      return {
+        id: m.id,
+        name: m.name || m.id,
+        pricing: m.pricing || null,
+        isFree: prompt === 0 && completion === 0,
+      };
+    }).filter((m) => m && m.id) : [];
   } finally {
     clearTimeout(t);
   }
@@ -292,5 +305,44 @@ export function extractToolCalls(data) {
  */
 export function extractFinishReason(data) {
   return data?.choices?.[0]?.finish_reason || null;
+}
+
+/* ---------- cron / tarefas agendadas ----------
+   Diferente dos endpoints de modelo, NÃO mandamos baseUrl/apiKey: as tarefas e
+   conexões vivem no servidor (cron-state.json). Estes wrappers só falam com
+   /api/cron/*. Segredos nunca trafegam de volta (server redige pra "***"). */
+async function cronPost(pathname, body) {
+  const response = await fetch(pathname, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return response.json();
+}
+
+export function cronList() {
+  return cronPost("/api/cron/list", {});
+}
+export function cronUpsertTask(task) {
+  return cronPost("/api/cron/upsert", { task });
+}
+export function cronDeleteTask(id) {
+  return cronPost("/api/cron/delete", { id });
+}
+export function cronRunNow(id) {
+  return cronPost("/api/cron/run-now", { id });
+}
+export function cronHistory(id) {
+  return cronPost("/api/cron/history", { id });
+}
+export function cronResult(id, runId) {
+  return cronPost("/api/cron/result", { id, runId });
+}
+export function cronUpsertConnection(connection) {
+  return cronPost("/api/cron/connection-upsert", { connection });
+}
+export function cronDeleteConnection(id) {
+  return cronPost("/api/cron/connection-delete", { id });
 }
 
