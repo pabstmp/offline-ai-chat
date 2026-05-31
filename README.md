@@ -35,10 +35,12 @@ Self-hosted web client for [LM Studio](https://lmstudio.ai/) with **offline RAG*
 - **State-of-the-art embeddings** — defaults to `Qwen3-Embedding-4B` (top MTEB multilingual). Easy to switch from the UI.
 - **Profiles, servers, sampling** — multiple LM Studio endpoints, per-profile system prompt + sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `max_tokens`, etc.).
 - **Reasoning model support** — surfaces chain-of-thought in a collapsible block, auto-bumps `max_tokens` if a thinking model exhausts the budget.
+- **Cloud LLM integrations** — native support for [OpenRouter](https://openrouter.ai) to connect to cloud models (Gemini, Claude, DeepSeek, Llama...) with automatic grouping of free/paid models, pricing estimation, and proxy header forwarding.
+- **Extensible Task Scheduler (Cron)** — schedule server-side tasks (such as daily web search digests, log rotations, or backups) to run in the background, even when the browser is closed.
 - **LM Studio extended API** — load/unload models with custom context length straight from the Settings drawer.
-- **Zero client-side dependencies** — vanilla JS modules, no build step. The server is one ~700-line `node server.js` proxy.
+- **Zero client-side dependencies** — vanilla JS modules, no build step. The server is a single Node proxy.
 - **PWA** — installable, offline shell, service worker with network-first for JS modules.
-- **Privacy by design** — nothing leaves your network. Conversations live in `localStorage` + `IndexedDB`. The server proxy only talks to your LM Studio.
+- **Privacy by design** — nothing leaves your network unless configured. Conversations live in `localStorage` + `IndexedDB`.
 
 ---
 
@@ -58,13 +60,14 @@ The default Compose file publishes the app on `127.0.0.1:8080` only. That is int
 
 ### First-run setup
 
-1. **Settings → Servidor**: point to your LM Studio.
-   - Native same machine: `http://localhost:1234/v1` (default).
-   - Docker with LM Studio on the host: `http://host.docker.internal:1234/v1` (allowed by the default Compose file).
-   - LAN: `http://192.168.1.x:1234/v1` (replace `x`; add it to `ALLOWED_LM_HOSTS` if this app is LAN-exposed).
-   - Ensure LM Studio is allowing connections from the network and the port is open in your firewall.
-2. **Settings → Perfis & Inferência**: pick a chat model from the dropdown.
-3. **(Optional) Settings → Workspace**: connect a folder, click **Indexar com RAG**, ask grounded questions.
+1. **Settings → Servidor**: Connect your model providers.
+   - **LM Studio (Local)**: Point to your LM Studio base URL.
+     - Native same machine: `http://localhost:1234/v1` (default).
+     - Docker with LM Studio on the host: `http://host.docker.internal:1234/v1` (allowed by default).
+     - LAN: `http://192.168.1.x:1234/v1` (replace `x`; add it to `ALLOWED_LM_HOSTS` if this app is LAN-exposed).
+   - **OpenRouter (Cloud)**: Click **"+ Adicionar OpenRouter"** and paste your OpenRouter API key.
+2. **Settings → Perfis & Inferência**: Pick a model from the dropdown. OpenRouter models will be grouped into 🎁 Free and 💰 Paid tiers with pricing estimates.
+3. **(Optional) Settings → Workspace**: Connect a folder, click **Indexar com RAG**, and ask grounded questions.
 
 ### Without Docker
 
@@ -115,6 +118,11 @@ See [`.env.example`](./.env.example). The most useful:
 | `MAX_BODY_BYTES` | `~1.4x MAX_PDF_BYTES` | Max JSON request body, sized for base64 PDF uploads |
 | `OCR_LANGS` | `por+eng` | Tesseract languages (e.g. `eng`, `por+eng+spa`) |
 | `OCR_CACHE_DIR` | `/app/.cache/tesseract` | Where trained data files are cached |
+| `CRON_ENABLED` | `false` | Enables background task scheduler/cron engine |
+| `FS_WRITE_ROOTS` | _(empty)_ | CSV of allowed write-directories for cron tasks |
+| `CRON_STATE_DIR` | `ROOT/data` | Where scheduled tasks and connection state is stored |
+| `CRON_SEED_FILE` | _(empty)_ | JSON seed file path to pre-populate tasks/connections on boot |
+| `CRON_TZ` | `UTC` | Default timezone for background tasks |
 
 ### Workspace whitelist (multi-user / LAN deploy)
 
@@ -129,6 +137,20 @@ volumes:
 ```
 
 Path traversal protection is always on regardless of this setting.
+
+### Background Task Scheduler (Cron Engine)
+
+The background scheduler (opt-in) executes automated tasks on the server independently of browser sessions (e.g., generating daily web search briefings/digests, rotating logs, or backing up state).
+
+To enable it, set `CRON_ENABLED=true` and specify `FS_WRITE_ROOTS` to restrict write access for task outputs:
+
+```bash
+# Enable the background scheduler and allow outputs to be written to /app/data
+CRON_ENABLED=true
+FS_WRITE_ROOTS=/app/data
+```
+
+Once enabled, a new **Tasks (Agendamentos)** tab will appear under Settings in the UI where you can manage connection credentials (such as OpenRouter or LM Studio), schedule tasks using standard cron expressions, and inspect task execution history or results.
 
 ---
 
