@@ -3,12 +3,12 @@
    - network-only for /api/* (LM Studio proxy + fs endpoints)
    - bump CACHE_VERSION to invalidate old caches */
 
-const CACHE_VERSION = "v25";
+const CACHE_VERSION = "v27";
 const CACHE_NAME = `offline-ai-shell-${CACHE_VERSION}`;
 const SHELL_URLS = [
   "/",
   "/index.html",
-  "/styles.css?v=25",
+  "/styles.css?v=27",
   "/app.js",
   "/manifest.webmanifest",
   "/modules/store.js",

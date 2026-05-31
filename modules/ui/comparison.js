@@ -345,6 +345,33 @@ function buildComposer() {
   return composer;
 }
 
+/* Bolha da pergunta do usuário, no mesmo visual do chat (msg/msg-user), mas SEM
+   os botões de ação do chat (editar/excluir/regenerar) — eles operam no histórico
+   principal e não fazem sentido aqui. Texto puro via textContent (seguro). */
+function buildUserPromptNode(prompt) {
+  const node = document.createElement("article");
+  node.className = "msg msg-user no-anim";
+  const avatar = document.createElement("div");
+  avatar.className = "msg-avatar";
+  avatar.textContent = "EU";
+  const content = document.createElement("div");
+  content.className = "msg-content";
+  const meta = document.createElement("div");
+  meta.className = "msg-meta";
+  const role = document.createElement("span");
+  role.className = "msg-role";
+  role.textContent = "Você";
+  meta.appendChild(role);
+  const body = document.createElement("div");
+  body.className = "msg-body";
+  body.textContent = prompt;
+  content.appendChild(meta);
+  content.appendChild(body);
+  node.appendChild(avatar);
+  node.appendChild(content);
+  return node;
+}
+
 async function handleSend() {
   const input = elements.comparisonView.querySelector("#comparisonInput");
   const prompt = input.value.trim();
@@ -391,7 +418,15 @@ async function handleSend() {
     select.classList.add("hidden");
     label.textContent = i === 0 ? sessionState.modelA : sessionState.modelB;
     label.classList.remove("hidden");
-    
+
+    // Mostra a pergunta enviada (igual ao histórico do chat) e cria um container
+    // dedicado pra resposta — assim o bloco de raciocínio (inserido no topo do
+    // container da resposta) não pula pra cima da pergunta.
+    msgArea.appendChild(buildUserPromptNode(sessionState.prompt));
+    const answer = document.createElement("div");
+    answer.className = "panel-answer";
+    msgArea.appendChild(answer);
+
     p.querySelector(".panel-stop").classList.remove("hidden");
   });
 
@@ -411,8 +446,8 @@ async function handleSend() {
 async function startGeneration(index) {
   const modelId = index === 0 ? sessionState.modelA : sessionState.modelB;
   const panel = elements.comparisonView.querySelector(`.comparison-panel[data-panel="${index}"]`);
-  const body = panel.querySelector(".panel-messages");
-  
+  const body = panel.querySelector(".panel-answer") || panel.querySelector(".panel-messages");
+
   if (index === 0) sessionState.busyA = true;
   else sessionState.busyB = true;
 
@@ -490,8 +525,8 @@ function abortPanel(index) {
 
 function finalizePanel(index, content, isError, reasoning, meta) {
   const panel = elements.comparisonView.querySelector(`.comparison-panel[data-panel="${index}"]`);
-  const body = panel.querySelector(".panel-messages");
-  
+  const body = panel.querySelector(".panel-answer") || panel.querySelector(".panel-messages");
+
   finalizeAssistant(body, content, isError, reasoning, meta);
   
   panel.querySelector(".panel-stop").classList.add("hidden");

@@ -298,7 +298,10 @@ kbd {
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
 }
 
-.topbar-brand { display: none; }
+/* Marca textual no topo — só o nome "Offline AI Chat", sem o antigo
+   `.topbar-mark` (aquele quadradinho/estrela com gradiente). Oculto no mobile
+   pela media query lá embaixo pra não espremer o topbar pequeno. */
+.topbar-brand { display: flex; }
 
 .topbar-spacer { flex: 1; }
 
@@ -2616,6 +2619,13 @@ body::after {
   padding: var(--s-4);
   scroll-behavior: smooth;
   background: var(--bg-1);
+}
+
+/* Separação entre a pergunta (bolha do usuário) e a resposta do modelo. */
+.panel-answer {
+  margin-top: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
 }
 
 /* Estado vazio (Empty State) para os painéis */
