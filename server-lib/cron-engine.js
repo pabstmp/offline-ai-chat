@@ -164,6 +164,20 @@ function buildPriorContext(priorSummaries, results) {
   return `Resultado dos passos anteriores:\n\n${parts.join("\n\n")}`;
 }
 
+/** Aplica campos de sampling suportados (não-nulos) num payload OpenAI. Puro.
+   NÃO mexe em `temperature` (resolvida à parte). Espelha o `sampling` do perfil. */
+function applySampling(payload, sampling) {
+  if (!sampling || typeof sampling !== "object") return payload;
+  const num = (v) => (v == null || v === "" || !Number.isFinite(Number(v)) ? undefined : Number(v));
+  const fields = ["top_p", "max_tokens", "top_k", "min_p", "repeat_penalty", "presence_penalty", "frequency_penalty"];
+  for (const f of fields) {
+    const v = num(sampling[f]);
+    if (v !== undefined) payload[f] = v;
+  }
+  if (Array.isArray(sampling.stop) && sampling.stop.length) payload.stop = sampling.stop;
+  return payload;
+}
+
 /** Markdown final de uma cascata: saída do último passo + resumo dos passos. */
 function renderPipelineMarkdown({ title, dateStr, steps, finalOutput }) {
   const out = [];
@@ -416,7 +430,7 @@ const TASK_REGISTRY = {
         const llm = await ctx.deps.callLLMOnce({
           baseUrl: conn.baseUrl,
           apiKey: conn.apiKey,
-          payload: { model, messages, temperature: temp },
+          payload: applySampling({ model, messages, temperature: temp }, agent && agent.sampling),
           timeoutMs: perStepTimeout,
           signal: ctx.signal,
         });
@@ -703,6 +717,7 @@ function createCronEngine(opts = {}) {
       model: c.model,
       apiKeyEnv: c.apiKeyEnv || null,
       hasApiKey: !!(c.apiKey || c.apiKeyEnv),
+      sourceServerId: c.sourceServerId || null, // se espelhada de um servidor de chat
     };
   }
 
@@ -713,6 +728,7 @@ function createCronEngine(opts = {}) {
     conn.baseUrl = String(input.baseUrl || "").trim();
     conn.model = String(input.model || "").trim();
     conn.apiKeyEnv = input.apiKeyEnv ? String(input.apiKeyEnv).trim() : null;
+    if (input.sourceServerId !== undefined) conn.sourceServerId = input.sourceServerId || null;
     // Sentinela "***" = manter a chave existente (a UI nunca recebe o segredo de volta).
     if (input.apiKey === "***") {
       if (!existing) conn.apiKey = "";
@@ -763,6 +779,10 @@ function createCronEngine(opts = {}) {
     const temp = Number(input.temperature);
     agent.temperature = Number.isFinite(temp) ? temp : 0.3;
     agent.tools = normalizeAgentTools(input.tools);
+    if (input.sourceProfileId !== undefined) agent.sourceProfileId = input.sourceProfileId || null;
+    // sampling extra (top_p/max_tokens/stop…) opcional, espelhado do perfil de chat
+    if (input.sampling && typeof input.sampling === "object") agent.sampling = input.sampling;
+    else if (input.sampling === null) agent.sampling = null;
     if (!existing) S.agents.push(agent);
     schedulePersist();
     return publicAgent(agent);
@@ -1079,6 +1099,7 @@ module.exports = {
   interpolateTemplate,
   buildSearchBlock,
   buildPriorContext,
+  applySampling,
   renderPipelineMarkdown,
   formatDateInTz,
   formatStampInTz,

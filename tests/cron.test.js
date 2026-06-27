@@ -17,7 +17,7 @@ const { parseCron, cronMatches, nextRunAfter, presetToCron, resolveCron, isValid
 const { createSafeWriter } = require("../server-lib/safe-write.js");
 const {
   createCronEngine, buildDigestPrompt, renderDigestMarkdown, formatDateInTz,
-  TASK_REGISTRY, interpolateTemplate, buildSearchBlock, buildPriorContext, renderPipelineMarkdown,
+  TASK_REGISTRY, interpolateTemplate, buildSearchBlock, buildPriorContext, applySampling, renderPipelineMarkdown,
 } = require("../server-lib/cron-engine.js");
 
 let passed = 0;
@@ -395,6 +395,29 @@ test("validateOptions: passo só-agentId é válido; inline exige conexão+instr
   const d = reg.defaultOptions();
   assert.equal(d.mode, "standard");
   assert.equal(d.autoChain, true);
+});
+
+section("ponte perfil→cron — campos de origem + sampling");
+test("connection guarda/expõe sourceServerId; agent guarda sourceProfileId + sampling", () => {
+  const e = mkEngine();
+  const conn = e.upsertConnection({ nickname: "C", baseUrl: "http://localhost:1234/v1", apiKey: "k", model: "m0", sourceServerId: "srv1" });
+  assert.equal(conn.sourceServerId, "srv1");
+  assert.equal(e.getPublicState().connections[0].sourceServerId, "srv1");
+  const ag = e.upsertAgent({ name: "P", connectionId: conn.id, sourceProfileId: "prof1", sampling: { top_p: 0.9, max_tokens: 2000, temperature: 0.5 } });
+  assert.equal(ag.sourceProfileId, "prof1");
+  assert.equal(e.resolveAgent(ag.id).sampling.top_p, 0.9);
+  assert.equal(e.getPublicState().agents[0].sourceProfileId, "prof1");
+});
+test("applySampling aplica não-nulos, ignora null/inválido, não mexe em temperature", () => {
+  const base = { model: "m", temperature: 0.3 };
+  const out = applySampling({ ...base }, { top_p: 0.9, max_tokens: 1500, top_k: null, stop: ["</s>"], repeat_penalty: "abc" });
+  assert.equal(out.top_p, 0.9);
+  assert.equal(out.max_tokens, 1500);
+  assert.deepEqual(out.stop, ["</s>"]);
+  assert.equal("top_k" in out, false);
+  assert.equal("repeat_penalty" in out, false);
+  assert.equal(out.temperature, 0.3); // não sobrescreve
+  assert.deepEqual(applySampling({ ...base }, null), base); // sampling ausente = no-op
 });
 
 section("agent_pipeline — run() com agente + auto-chain");

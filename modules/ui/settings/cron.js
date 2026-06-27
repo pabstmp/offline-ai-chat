@@ -13,6 +13,7 @@ import {
 import {
   cronList, cronUpsertTask, cronDeleteTask, cronRunNow, cronResult,
   cronUpsertConnection, cronDeleteConnection, cronUpsertAgent, cronDeleteAgent,
+  listModels, lmListModelsInfo,
 } from "../../api.js";
 import { renderMarkdown } from "../../markdown.js";
 
@@ -68,8 +69,8 @@ function render(host) {
   host.appendChild(tasksSection(cache));
   // Setup (conexões + agentes) recolhido — aberto só quando falta configurar
   // ou quando um editor de conexão/agente está aberto.
-  const nConn = (cache.connections || []).length;
-  const nAgent = (cache.agents || []).length;
+  const nConn = (cache.connections || []).filter((x) => !x.sourceServerId).length;
+  const nAgent = (cache.agents || []).filter((a) => !a.sourceProfileId).length;
   const autoOpen = nConn === 0 || editingConnId != null || editingAgentId != null;
   const setup = collapsible("Conexões e agentes", {
     open: setupOpen != null ? setupOpen : autoOpen,
@@ -215,7 +216,8 @@ function disabledHelp() {
 
 function connectionsSection(c) {
   const sec = section("Conexões LLM");
-  for (const conn of c.connections) {
+  // Conexões espelhadas de um perfil/servidor (sourceServerId) são auto-gerenciadas — escondidas aqui.
+  for (const conn of (c.connections || []).filter((x) => !x.sourceServerId)) {
     sec.appendChild(editingConnId === conn.id ? connectionEditor(conn, c) : connectionCard(conn));
   }
   if (editingConnId === "new") sec.appendChild(connectionEditor(null, c));
@@ -261,6 +263,122 @@ function connectionCard(conn) {
   );
 }
 
+/* Campo de modelo: input livre + botão "buscar modelos" que consulta o servidor
+   (getBaseUrl/getApiKey) e abre um select com os DISPONÍVEIS, separando os
+   CARREGADOS (state==="loaded" no LM Studio). Escrever na mão também vale. */
+function modelField(label, modelInput, getBaseUrl, getApiKey) {
+  const pick = document.createElement("div");
+  const fetchBtn = button("🔄 buscar modelos", "btn-ghost btn-sm", async () => {
+    const url = (getBaseUrl() || "").trim();
+    if (!url) { state.toast("Preencha a Base URL primeiro.", "warn"); return; }
+    const key = getApiKey() || "";
+    fetchBtn.disabled = true; const orig = fetchBtn.textContent; fetchBtn.textContent = "buscando…";
+    try {
+      let opts = [];
+      // 1) LM Studio estendido (sabe quais estão carregados)
+      try {
+        const info = await lmListModelsInfo({ baseUrl: url, apiKey: key });
+        opts = (info || []).map((m) => ({ id: m.id, loaded: m.state === "loaded" }));
+      } catch (_) { /* não é LM Studio — cai no genérico */ }
+      // 2) genérico (/v1/models) — OpenRouter, etc.
+      if (!opts.length) {
+        const list = await listModels({ baseUrl: url, apiKey: key });
+        opts = list.map((m) => ({ id: m.id, loaded: false }));
+      }
+      if (!opts.length) { state.toast("Nenhum modelo retornado pelo servidor.", "warn"); return; }
+      const sel = document.createElement("select");
+      sel.appendChild(new Option("— escolher modelo —", ""));
+      const loaded = opts.filter((o) => o.loaded);
+      const others = opts.filter((o) => !o.loaded);
+      const addGroup = (lbl, arr) => {
+        if (!arr.length) return;
+        const g = document.createElement("optgroup"); g.label = lbl;
+        arr.forEach((o) => g.appendChild(new Option(o.id, o.id)));
+        sel.appendChild(g);
+      };
+      addGroup("● Carregados", loaded);
+      addGroup("Disponíveis", others);
+      if (modelInput.value && opts.some((o) => o.id === modelInput.value)) sel.value = modelInput.value;
+      sel.addEventListener("change", () => { if (sel.value) modelInput.value = sel.value; });
+      pick.replaceChildren(sel);
+      state.toast(`${opts.length} modelo(s)${loaded.length ? ` · ${loaded.length} carregado(s)` : ""}.`, "success");
+    } catch (e) {
+      state.toast("Falha ao buscar modelos: " + e.message, "error");
+    } finally {
+      fetchBtn.disabled = false; fetchBtn.textContent = orig;
+    }
+  });
+  const row = document.createElement("div");
+  row.className = "row";
+  const wrapIn = document.createElement("div"); wrapIn.className = "grow"; wrapIn.appendChild(modelInput);
+  row.appendChild(wrapIn); row.appendChild(fetchBtn);
+  const f = field(label, row, "Digite, ou clique em “buscar modelos” pra escolher (os carregados aparecem primeiro).");
+  f.appendChild(pick);
+  return f;
+}
+
+// Servidores de chat salvos (localStorage) — pra reaproveitar sem redigitar.
+function savedChatServers() {
+  const conn = state.store.get("connection") || {};
+  return Array.isArray(conn.servers) ? conn.servers : [];
+}
+function activeChatModel() {
+  const profiles = state.store.get("profiles") || [];
+  const ap = profiles.find((p) => p.id === state.store.get("activeProfileId")) || profiles[0];
+  return (ap && ap.defaultModel) || "";
+}
+
+/* ---------- ponte perfil de chat → agente/conexão do cron ---------- */
+
+function chatProfiles() {
+  return state.store.get("profiles") || [];
+}
+function serverOfProfile(p) {
+  const conn = state.store.get("connection") || {};
+  const servers = conn.servers || [];
+  return servers.find((s) => s.id === p.defaultServerId) ||
+    servers.find((s) => s.id === conn.activeServerId) || servers[0] || null;
+}
+
+/* Provisiona (idempotente) a conexão + o agente do cron a partir de um perfil de
+   chat. Reaproveita os espelhos existentes (sourceServerId/sourceProfileId) e os
+   atualiza in-place em `cronState` pra deduplicar entre passos no mesmo Salvar.
+   Retorna o agentId. */
+async function ensureProfileProvisioned(profile, cronState) {
+  const server = serverOfProfile(profile);
+  if (!server) throw new Error(`Perfil "${profile.name}" não tem servidor — configure na aba Servidor.`);
+
+  // 1) conexão (espelho do servidor)
+  let conn = (cronState.connections || []).find((c) => c.sourceServerId === server.id);
+  const connObj = (await cronUpsertConnection({
+    id: conn ? conn.id : undefined,
+    sourceServerId: server.id,
+    nickname: server.nickname || "Servidor de chat",
+    baseUrl: server.baseUrl,
+    apiKey: server.apiKey || "",
+    model: profile.defaultModel || "",
+  })).connection;
+  if (conn) Object.assign(conn, connObj); else { cronState.connections = cronState.connections || []; cronState.connections.push(connObj); }
+
+  // 2) agente (espelho do perfil)
+  let agent = (cronState.agents || []).find((a) => a.sourceProfileId === profile.id);
+  const agObj = (await cronUpsertAgent({
+    id: agent ? agent.id : undefined,
+    sourceProfileId: profile.id,
+    name: profile.name || "Agente",
+    connectionId: connObj.id,
+    model: profile.defaultModel || "",
+    systemPrompt: profile.systemPrompt || "",
+    defaultPrompt: agent ? agent.defaultPrompt : "",
+    temperature: profile.sampling?.temperature ?? 0.3,
+    tools: agent ? agent.tools : undefined,
+    sampling: profile.sampling || null,
+  })).agent;
+  if (agent) Object.assign(agent, agObj); else { cronState.agents = cronState.agents || []; cronState.agents.push(agObj); }
+
+  return agObj.id;
+}
+
 function connectionEditor(conn, c) {
   const editing = !!conn;
   const wrap = card([]);
@@ -270,9 +388,29 @@ function connectionEditor(conn, c) {
   const apiKey = input({ type: "password", value: "", placeholder: editing && conn.hasApiKey ? "*** (em branco mantém a atual)" : "API key (opcional)" });
   const apiKeyEnv = input({ type: "text", value: conn?.apiKeyEnv || "", placeholder: "ou nome de env var (ex: OPENROUTER_KEY)" });
 
+  // Atalho: preencher a partir de um servidor de chat já salvo (aba Servidor).
+  const servers = savedChatServers();
+  if (servers.length) {
+    const importSel = select(
+      [{ value: "", label: "— escolher servidor salvo —" }, ...servers.map((s) => ({ value: s.id, label: s.nickname || s.baseUrl }))],
+      ""
+    );
+    importSel.addEventListener("change", () => {
+      const s = servers.find((x) => x.id === importSel.value);
+      importSel.value = "";
+      if (!s) return;
+      if (!nick.value) nick.value = s.nickname || "LM Studio";
+      baseUrl.value = s.baseUrl || "";
+      if (!model.value) model.value = activeChatModel();
+      if (s.apiKey) apiKey.value = s.apiKey;
+      state.toast("Campos preenchidos do servidor de chat — revise e salve.", "info");
+    });
+    wrap.appendChild(field("Importar de um servidor salvo", importSel, "Puxa URL, modelo e chave do que você já configurou na aba Servidor."));
+  }
+
   wrap.appendChild(field("Apelido", nick));
   wrap.appendChild(field("Base URL", baseUrl, "Mesma política SSRF do proxy (ALLOWED_LM_HOSTS em LAN)."));
-  wrap.appendChild(field("Modelo padrão", model));
+  wrap.appendChild(modelField("Modelo padrão", model, () => baseUrl.value, () => apiKey.value));
   wrap.appendChild(field("API key", apiKey));
   wrap.appendChild(field("API key via env (alternativa segura)", apiKeyEnv, "Se preenchido, a chave literal é ignorada; o servidor lê process.env[NOME]."));
 
@@ -306,7 +444,7 @@ async function copyFromChatServer() {
   try {
     await cronUpsertConnection({
       nickname: srv.nickname || "Servidor de chat",
-      baseUrl: srv.baseUrl, apiKey: srv.apiKey || "", model: "",
+      baseUrl: srv.baseUrl, apiKey: srv.apiKey || "", model: activeChatModel(),
     });
     state.toast("Conexão copiada do servidor de chat.", "success");
     rerender();
@@ -317,7 +455,8 @@ async function copyFromChatServer() {
 
 function agentsSection(c) {
   const sec = section("Agentes reutilizáveis");
-  for (const agent of c.agents || []) {
+  // Agentes espelhados de um perfil (sourceProfileId) são auto-gerenciados — escondidos aqui.
+  for (const agent of (c.agents || []).filter((a) => !a.sourceProfileId)) {
     sec.appendChild(editingAgentId === agent.id ? agentEditor(agent, c) : agentCard(agent, c));
   }
   if (editingAgentId === "new") sec.appendChild(agentEditor(null, c));
@@ -362,7 +501,7 @@ function agentEditor(agent, c) {
   if (!(c.connections || []).length) wrap.appendChild(errorCard("Crie uma conexão LLM acima primeiro."));
   wrap.appendChild(field("Nome", name));
   wrap.appendChild(field("Conexão LLM", connSel));
-  wrap.appendChild(field("Modelo", model));
+  wrap.appendChild(modelField("Modelo", model, () => { const cc = (c.connections || []).find((x) => x.id === connSel.value); return cc ? cc.baseUrl : ""; }, () => ""));
   wrap.appendChild(field("Persona (prompt de sistema)", sys));
   wrap.appendChild(field("Instrução padrão", defPrompt));
   wrap.appendChild(field("Temperatura", temp));
@@ -513,6 +652,21 @@ function taskEditor(task, c) {
       },
     };
     try {
+      // Passos que referenciam um PERFIL de chat: provisiona (idempotente) a
+      // conexão + o agente do cron a partir do perfil e troca profileId→agentId.
+      if (type === "agent_pipeline") {
+        const steps = (payload.options && payload.options.steps) || [];
+        if (steps.some((s) => s.profileId)) {
+          const cronState = await cronList();
+          const profs = chatProfiles();
+          for (const step of steps) {
+            if (!step.profileId) continue;
+            const prof = profs.find((p) => p.id === step.profileId);
+            if (!prof) throw new Error("Perfil do passo não encontrado.");
+            step.agentId = await ensureProfileProvisioned(prof, cronState);
+          }
+        }
+      }
       await cronUpsertTask(payload);
       editingTaskId = null;
       state.toast("Tarefa salva.", "success");
@@ -687,7 +841,9 @@ function optionsForm(type, options, c) {
     const conns = c.connections || [];
     const connOpts = conns.map((x) => ({ value: x.id, label: x.nickname || x.baseUrl }));
     const wsRoots = c.workspaceRoots || [];
-    const agentOpts = (c.agents || []).map((a) => ({ value: a.id, label: a.name || "Agente" }));
+    // Agentes manuais (os espelhados de perfil saem da lista — perfis vão no grupo "Perfis").
+    const agentOpts = (c.agents || []).filter((a) => !a.sourceProfileId).map((a) => ({ value: a.id, label: a.name || "Agente" }));
+    const profileOpts = chatProfiles().map((p) => ({ value: p.id, label: p.name || p.id }));
     let mode = options.mode === "advanced" ? "advanced" : "standard";
     const insertToken = (ta, token) => { ta.focus(); const s = ta.selectionStart, e = ta.selectionEnd; ta.setRangeText(token, s, e, "end"); };
     function nextStepId() {
@@ -713,7 +869,7 @@ function optionsForm(type, options, c) {
     // descartaria edições em andamento). Antes de cada mutação, syncFromDom() puxa os
     // valores atuais dos inputs de volta pro stepData.
     const stepData = (options.steps || []).map((s) => ({
-      id: s.id || "", name: s.name || "", agentId: s.agentId || "", connectionId: s.connectionId || "",
+      id: s.id || "", name: s.name || "", profileId: s.profileId || "", agentId: s.agentId || "", connectionId: s.connectionId || "",
       model: s.model || "", systemPrompt: s.systemPrompt || "", prompt: s.prompt || "",
       temperature: s.temperature ?? 0.3,
       webSearch: {
@@ -739,11 +895,26 @@ function optionsForm(type, options, c) {
       refs = [];
       const adv = mode === "advanced";
       stepData.forEach((sd, i) => {
-        const agentSel = select([{ value: "", label: "inline" }, ...agentOpts], sd.agentId);
-        const usingAgent = () => !!agentSel.value;
+        // Origem do passo: Perfil de chat | Agente do cron | inline
+        const srcSel = document.createElement("select");
+        srcSel.appendChild(new Option("inline", ""));
+        if (profileOpts.length) {
+          const g = document.createElement("optgroup"); g.label = "Perfis";
+          profileOpts.forEach((o) => g.appendChild(new Option(o.label, "p:" + o.value)));
+          srcSel.appendChild(g);
+        }
+        if (agentOpts.length) {
+          const g = document.createElement("optgroup"); g.label = "Agentes";
+          agentOpts.forEach((o) => g.appendChild(new Option(o.label, o.value)));
+          srcSel.appendChild(g);
+        }
+        srcSel.value = sd.profileId ? "p:" + sd.profileId : (sd.agentId || "");
+        const isInline = () => srcSel.value === "";
+        const usingProfile = () => srcSel.value.startsWith("p:");
+        const usingAgentRef = () => srcSel.value !== "" && !usingProfile();
         const nameIn = input({ type: "text", value: sd.name, placeholder: "Passo " + (i + 1) });
         nameIn.style.width = "100%";
-        const promptIn = textarea(sd.prompt, 3, usingAgent() ? "(usa a instrução padrão do agente)" : "Escreva o que este agente deve fazer…");
+        const promptIn = textarea(sd.prompt, 3, usingAgentRef() ? "(usa a instrução padrão do agente)" : "Escreva o que este agente deve fazer…");
         let idIn = null, connSel = null, modelIn = null, sysIn = null, tempIn = null;
         let wsEnabled = null, wsQuery = null, wsMax = null, frEnabled = null, frRoot = null, frRel = null;
 
@@ -761,8 +932,8 @@ function optionsForm(type, options, c) {
         nameWrap.className = "grow";
         nameWrap.appendChild(nameIn);
         hd.appendChild(nameWrap);
-        agentSel.addEventListener("change", () => { syncFromDom(); renderSteps(); });
-        if (agentOpts.length) hd.appendChild(agentSel);
+        srcSel.addEventListener("change", () => { syncFromDom(); renderSteps(); });
+        if (profileOpts.length || agentOpts.length) hd.appendChild(srcSel);
         const up = button("↑", "btn-ghost btn-sm", () => { syncFromDom(); if (i > 0) { const t = stepData[i - 1]; stepData[i - 1] = stepData[i]; stepData[i] = t; renderSteps(); } });
         const down = button("↓", "btn-ghost btn-sm", () => { syncFromDom(); if (i < stepData.length - 1) { const t = stepData[i + 1]; stepData[i + 1] = stepData[i]; stepData[i] = t; renderSteps(); } });
         const del = button("×", "btn-ghost btn-sm", () => { syncFromDom(); stepData.splice(i, 1); renderSteps(); });
@@ -794,7 +965,7 @@ function optionsForm(type, options, c) {
           grid.appendChild(field("Temperatura", tempIn));
           cardEl.appendChild(grid);
 
-          if (!usingAgent()) {
+          if (isInline()) {
             connSel = select(connOpts, sd.connectionId || (connOpts[0] && connOpts[0].value) || "");
             modelIn = input({ type: "text", value: sd.model, placeholder: "vazio = modelo da conexão" });
             sysIn = textarea(sd.systemPrompt, 2, "persona (opcional)");
@@ -814,7 +985,7 @@ function optionsForm(type, options, c) {
             cardEl.appendChild(field("Pasta de leitura", frRoot.el));
             cardEl.appendChild(field("Arquivo a ler", frRel));
           }
-        } else if (!usingAgent()) {
+        } else if (isInline()) {
           // Standard inline: conexão + busca recolhidas em "⚙ ferramentas"
           const tools = collapsible("⚙ ferramentas");
           connSel = select(connOpts, sd.connectionId || (connOpts[0] && connOpts[0].value) || "");
@@ -831,7 +1002,8 @@ function optionsForm(type, options, c) {
           read: () => ({
             id: idIn ? (idIn.value.trim() || sd.id) : sd.id,
             name: nameIn.value.trim(),
-            agentId: agentSel.value,
+            profileId: srcSel.value.startsWith("p:") ? srcSel.value.slice(2) : "",
+            agentId: srcSel.value && !srcSel.value.startsWith("p:") ? srcSel.value : "",
             connectionId: connSel ? connSel.value : sd.connectionId,
             model: modelIn ? modelIn.value.trim() : sd.model,
             systemPrompt: sysIn ? sysIn.value : sd.systemPrompt,
@@ -852,7 +1024,7 @@ function optionsForm(type, options, c) {
     const addBtn = button("+ Passo", "btn-secondary", () => {
       syncFromDom();
       stepData.push({
-        id: nextStepId(), name: "", agentId: "",
+        id: nextStepId(), name: "", profileId: "", agentId: "",
         connectionId: (connOpts[0] && connOpts[0].value) || "",
         model: "", systemPrompt: "", prompt: "", temperature: 0.3,
         webSearch: { enabled: false, query: "", maxResults: 5 },
@@ -901,7 +1073,7 @@ function optionsForm(type, options, c) {
     modeRow.appendChild(seg.el);
     updateModeVisibility();
 
-    if (!conns.length) wrap.appendChild(errorCard("Crie uma conexão LLM primeiro (abra “Conexões e agentes”)."));
+    if (!conns.length && !profileOpts.length) wrap.appendChild(errorCard("Crie um perfil (aba Servidor/Perfis) ou uma conexão LLM (em “Conexões e agentes”) primeiro."));
     wrap.appendChild(modeRow);
     wrap.appendChild(stepsHost);
     wrap.appendChild(addBtn);
@@ -921,7 +1093,7 @@ function optionsForm(type, options, c) {
           mode,
           autoChain: autoChain.querySelector("input").checked,
           steps: stepData.map((s) => ({
-            id: s.id, name: s.name, agentId: s.agentId, connectionId: s.connectionId, model: s.model,
+            id: s.id, name: s.name, profileId: s.profileId, agentId: s.agentId, connectionId: s.connectionId, model: s.model,
             systemPrompt: s.systemPrompt, prompt: s.prompt, temperature: s.temperature,
             webSearch: s.webSearch, fileRead: s.fileRead,
           })),
