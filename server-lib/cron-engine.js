@@ -111,6 +111,82 @@ function asStringArray(v) {
   return v.map((x) => String(x || "").trim()).filter(Boolean);
 }
 
+/**
+ * Interpola tokens `{{...}}` num template, em UMA passada (não-recursivo: valores
+ * já substituídos não são re-escaneados, então output de LLM não injeta novos
+ * tokens). Tokens suportados: `{{vars.<k>}}`, `{{steps.<id>.output}}`, `{{date}}`.
+ * Token desconhecido ou caminho ausente vira string vazia — nunca lança (não
+ * quebra a tarefa às 3h). Função pura de (tmpl, scope).
+ */
+function interpolateTemplate(tmpl, scope) {
+  if (typeof tmpl !== "string") return tmpl == null ? "" : String(tmpl);
+  const s = scope || {};
+  return tmpl.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_m, token) => {
+    if (token === "date") return s.date != null ? String(s.date) : "";
+    const parts = token.split(".");
+    if (parts[0] === "vars" && parts.length === 2) {
+      const v = s.vars && s.vars[parts[1]];
+      return v == null ? "" : String(v);
+    }
+    if (parts[0] === "steps" && parts.length === 3 && parts[2] === "output") {
+      const st = s.steps && s.steps[parts[1]];
+      return st && st.output != null ? String(st.output) : "";
+    }
+    return "";
+  });
+}
+
+/** Bloco de texto com os resultados de busca de um passo (pra colar no prompt). */
+function buildSearchBlock(query, results) {
+  const lines = [`Resultados de busca para "${query}":`];
+  if (!results || !results.length) {
+    lines.push("(sem resultados)");
+  } else {
+    results.forEach((r, i) => {
+      lines.push(`${i + 1}. ${r.title || r.url}\n   ${r.url}\n   ${r.snippet || ""}`);
+    });
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Bloco de "contexto dos passos anteriores" pro encadeamento AUTOMÁTICO (modo Standard):
+ * cada passo recebe a saída dos anteriores sem o usuário digitar nenhum token.
+ * Função pura de (priorSummaries, results). Retorna "" se não há nada antes.
+ */
+function buildPriorContext(priorSummaries, results) {
+  const parts = [];
+  for (const s of priorSummaries || []) {
+    const out = results && results[s.id] ? results[s.id].output : "";
+    if (out && String(out).trim()) parts.push(`## ${s.name || s.id}\n${out}`);
+  }
+  if (!parts.length) return "";
+  return `Resultado dos passos anteriores:\n\n${parts.join("\n\n")}`;
+}
+
+/** Markdown final de uma cascata: saída do último passo + resumo dos passos. */
+function renderPipelineMarkdown({ title, dateStr, steps, finalOutput }) {
+  const out = [];
+  out.push(`# ${title || "Pipeline"}`);
+  out.push("");
+  out.push(`_Gerado em ${dateStr}_`);
+  out.push("");
+  out.push(finalOutput && finalOutput.trim() ? finalOutput.trim() : "_(sem saída)_");
+  out.push("");
+  out.push("---");
+  out.push("");
+  out.push("## Passos");
+  (steps || []).forEach((s, i) => {
+    const tools = [];
+    if (s.searched) tools.push("busca web");
+    if (s.readFile) tools.push("leitura de arquivo");
+    const toolStr = tools.length ? ` · ${tools.join(", ")}` : "";
+    out.push(`${i + 1}. **${s.name || s.id}** — \`${s.model}\`${toolStr} (${s.chars} chars)`);
+  });
+  out.push("");
+  return out.join("\n");
+}
+
 /* ---------- registry de tarefas ---------- */
 
 const TASK_REGISTRY = {
@@ -208,6 +284,168 @@ const TASK_REGISTRY = {
         model: opts.model || conn.model,
         snippet: markdown.slice(0, 400),
         urls: [...seenUrls],
+        notify: !!opts.notify,
+      };
+    },
+  },
+
+  agent_pipeline: {
+    label: "Cascata de agentes",
+    defaultOptions() {
+      return {
+        steps: [],
+        vars: {},
+        outputWriteRoot: "",
+        outputRelDir: "pipelines",
+        outputTitle: "",
+        fileReadRoot: "",
+        notify: true,
+        mode: "standard", // "standard" | "advanced" — dirige só a UI
+        autoChain: true, // encadeamento automático: cada passo recebe a saída dos anteriores
+      };
+    },
+    validateOptions(opts) {
+      const errors = [];
+      const steps = Array.isArray(opts.steps) ? opts.steps : [];
+      if (!steps.length) errors.push("nenhum passo definido");
+      if (!opts.outputWriteRoot) errors.push("outputWriteRoot obrigatório");
+      const seen = new Set();
+      for (const s of steps) {
+        const id = String((s && s.id) || "").trim();
+        if (!id) {
+          errors.push("passo sem id");
+          continue;
+        }
+        if (!/^[A-Za-z0-9_-]+$/.test(id)) errors.push(`passo "${id}": id inválido (use letras, números, _ ou -)`);
+        if (seen.has(id)) errors.push(`id de passo duplicado: "${id}"`);
+        seen.add(id);
+        // Passo válido se referencia um agente salvo OU define conexão+prompt inline.
+        const hasAgent = !!s.agentId;
+        if (!hasAgent && !s.connectionId) errors.push(`passo "${id}": escolha um agente ou uma conexão`);
+        if (!hasAgent && !String(s.prompt || "").trim()) errors.push(`passo "${id}": instrução vazia`);
+        if (s.webSearch && s.webSearch.enabled && !String(s.webSearch.query || "").trim())
+          errors.push(`passo "${id}": busca web habilitada sem query`);
+        if (s.fileRead && s.fileRead.enabled && !String(s.fileRead.relPath || "").trim())
+          errors.push(`passo "${id}": leitura de arquivo habilitada sem caminho`);
+      }
+      return { ok: errors.length === 0, errors };
+    },
+    async run(task, ctx) {
+      const opts = task.options;
+      const steps = Array.isArray(opts.steps) ? opts.steps : [];
+      if (!steps.length) throw new Error("pipeline sem passos.");
+      const vars = opts.vars && typeof opts.vars === "object" ? opts.vars : {};
+      const dateStr = formatDateInTz(ctx.now, ctx.tz);
+      // Orçamento de timeout: divide o cap global entre os passos. O AbortController
+      // único da engine continua como hard-stop do run() inteiro.
+      const perStepTimeout = Math.max(5000, Math.floor((ctx.timeoutMs || 120000) / steps.length));
+
+      const autoChain = opts.autoChain !== false;
+      const results = {}; // id -> { output }
+      const stepSummaries = [];
+      for (let idx = 0; idx < steps.length; idx++) {
+        const step = steps[idx];
+        checkAbort(ctx.signal);
+        const id = String(step.id || "").trim();
+
+        // Resolve config efetiva: agente salvo (persona + instrução padrão) + overrides do passo.
+        const agent = step.agentId ? ctx.resolveAgent(step.agentId) : null;
+        if (step.agentId && !agent) throw new Error(`passo "${id}": agente não encontrado.`);
+        const conn = ctx.resolveConnection(step.connectionId || (agent && agent.connectionId));
+        if (!conn) throw new Error(`passo "${id}": conexão LLM não configurada.`);
+        const systemPrompt = step.systemPrompt || (agent && agent.systemPrompt) || "";
+        const promptTmpl = String(step.prompt || "").trim() || (agent && agent.defaultPrompt) || "";
+        const model = step.model || (agent && agent.model) || conn.model;
+        const temp = Number.isFinite(Number(step.temperature))
+          ? Number(step.temperature)
+          : agent && Number.isFinite(Number(agent.temperature))
+            ? Number(agent.temperature)
+            : 0.3;
+        const webSearch = step.webSearch || (agent && agent.tools && agent.tools.webSearch) || null;
+        const fileRead = step.fileRead || (agent && agent.tools && agent.tools.fileRead) || null;
+        const name = step.name || (agent && agent.name) || id;
+        const scope = { vars, steps: results, date: dateStr };
+
+        // (a) busca web ANTES do LLM (opcional)
+        let searchBlock = "";
+        let searched = false;
+        if (webSearch && webSearch.enabled) {
+          checkAbort(ctx.signal);
+          searched = true;
+          const q = interpolateTemplate(webSearch.query, scope);
+          const max = Math.max(1, Math.min(10, Number(webSearch.maxResults) || 5));
+          let r;
+          try {
+            r = await ctx.deps.webSearch(q);
+          } catch (e) {
+            r = { results: [], provider: "erro", error: e.message };
+          }
+          searchBlock = buildSearchBlock(q, (r.results || []).slice(0, max));
+        }
+
+        // (b) leitura de arquivo local ANTES do LLM (confinada a WORKSPACE_ROOTS)
+        let fileBlock = "";
+        let readFile = false;
+        if (fileRead && fileRead.enabled) {
+          checkAbort(ctx.signal);
+          readFile = true;
+          const root = fileRead.sourceRoot || opts.fileReadRoot;
+          const rel = interpolateTemplate(fileRead.relPath, scope);
+          const { content } = await ctx.deps.safeReader.readSafeTextFile(root, rel);
+          fileBlock = `Conteúdo de ${rel}:\n${content}`;
+        }
+
+        // (c) encadeamento AUTOMÁTICO: se o prompt não referencia {{steps...}}
+        //     explicitamente, prepende a saída dos passos anteriores (modo Standard,
+        //     sem token). Token explícito suprime o prepend (evita duplicar).
+        let chainBlock = "";
+        if (autoChain && idx > 0 && !/\{\{\s*steps\./.test(promptTmpl)) {
+          chainBlock = buildPriorContext(stepSummaries, results);
+        }
+
+        // (d) monta prompt do usuário e chama o LLM
+        const userPrompt = [interpolateTemplate(promptTmpl, scope), chainBlock, searchBlock, fileBlock]
+          .filter(Boolean)
+          .join("\n\n");
+        const messages = [];
+        if (String(systemPrompt).trim())
+          messages.push({ role: "system", content: interpolateTemplate(systemPrompt, scope) });
+        messages.push({ role: "user", content: userPrompt });
+
+        checkAbort(ctx.signal);
+        const llm = await ctx.deps.callLLMOnce({
+          baseUrl: conn.baseUrl,
+          apiKey: conn.apiKey,
+          payload: { model, messages, temperature: temp },
+          timeoutMs: perStepTimeout,
+          signal: ctx.signal,
+        });
+        results[id] = { output: llm.content || "" };
+        stepSummaries.push({ id, name, model, searched, readFile, chars: (llm.content || "").length });
+      }
+
+      // saída final = output do último passo (é o "documento"); intermediários vão pro resumo
+      const lastId = String(steps[steps.length - 1].id || "").trim();
+      const finalOutput = (results[lastId] && results[lastId].output) || "";
+      const markdown = renderPipelineMarkdown({
+        title: opts.outputTitle || task.name,
+        dateStr,
+        steps: stepSummaries,
+        finalOutput,
+      });
+      const dir = String(opts.outputRelDir || "pipelines").replace(/^[\\/]+|[\\/]+$/g, "") || "pipelines";
+      const fileRel = `${dir}/pipeline-${dateStr}.md`;
+      const { absolute } = ctx.deps.safeWriter.resolveSafeWritePath(opts.outputWriteRoot, fileRel);
+      const bytes = await ctx.deps.safeWriter.writeTextFileAtomically(absolute, markdown);
+
+      return {
+        fileRel,
+        writeRoot: opts.outputWriteRoot,
+        bytes,
+        stepCount: steps.length,
+        steps: stepSummaries,
+        model: stepSummaries.map((s) => s.model).join(", "),
+        snippet: markdown.slice(0, 400),
         notify: !!opts.notify,
       };
     },
@@ -363,7 +601,7 @@ function createCronEngine(opts = {}) {
   let persistSeq = 0;
 
   function emptyState() {
-    return { version: 1, connections: [], tasks: [], history: {} };
+    return { version: 1, connections: [], agents: [], tasks: [], history: {} };
   }
 
   function freshState() {
@@ -390,6 +628,7 @@ function createCronEngine(opts = {}) {
   function sanitizeState(obj) {
     const s = emptyState();
     if (obj && Array.isArray(obj.connections)) s.connections = obj.connections;
+    if (obj && Array.isArray(obj.agents)) s.agents = obj.agents;
     if (obj && Array.isArray(obj.tasks)) s.tasks = obj.tasks;
     if (obj && obj.history && typeof obj.history === "object") s.history = obj.history;
     for (const t of s.tasks) ensureTaskShape(t);
@@ -487,6 +726,50 @@ function createCronEngine(opts = {}) {
 
   function deleteConnection(id) {
     S.connections = S.connections.filter((c) => c.id !== id);
+    schedulePersist();
+    return { ok: true };
+  }
+
+  /* ----- agentes reutilizáveis (skills) ----- */
+
+  function resolveAgent(agentId) {
+    return S.agents.find((a) => a.id === agentId) || null;
+  }
+
+  // Agentes não guardam segredo (referenciam uma conexão), então o estado público é o
+  // próprio objeto — só normalizado. Mantido como função pra simetria com conexões.
+  function publicAgent(a) {
+    return JSON.parse(JSON.stringify(a));
+  }
+
+  function normalizeAgentTools(tools) {
+    const t = tools || {};
+    const ws = t.webSearch || {};
+    const fr = t.fileRead || {};
+    return {
+      webSearch: { enabled: !!ws.enabled, query: String(ws.query || ""), maxResults: Number(ws.maxResults) || 5 },
+      fileRead: { enabled: !!fr.enabled, sourceRoot: String(fr.sourceRoot || ""), relPath: String(fr.relPath || "") },
+    };
+  }
+
+  function upsertAgent(input) {
+    const existing = input.id ? S.agents.find((a) => a.id === input.id) : null;
+    const agent = existing || { id: crypto.randomUUID() };
+    agent.name = String(input.name || "").trim() || "Agente";
+    agent.connectionId = String(input.connectionId || "").trim();
+    agent.model = String(input.model || "").trim();
+    agent.systemPrompt = String(input.systemPrompt || "");
+    agent.defaultPrompt = String(input.defaultPrompt || "");
+    const temp = Number(input.temperature);
+    agent.temperature = Number.isFinite(temp) ? temp : 0.3;
+    agent.tools = normalizeAgentTools(input.tools);
+    if (!existing) S.agents.push(agent);
+    schedulePersist();
+    return publicAgent(agent);
+  }
+
+  function deleteAgent(id) {
+    S.agents = S.agents.filter((a) => a.id !== id);
     schedulePersist();
     return { ok: true };
   }
@@ -629,6 +912,7 @@ function createCronEngine(opts = {}) {
         timeoutMs: cap,
         deps: taskDeps,
         resolveConnection,
+        resolveAgent,
         getHistory,
         stateFilePath,
         log,
@@ -714,7 +998,9 @@ function createCronEngine(opts = {}) {
       enabled,
       stateFile: stateFilePath ? path.basename(stateFilePath) : null,
       writeRoots: taskDeps.safeWriter ? taskDeps.safeWriter.getWriteRoots() : [],
+      workspaceRoots: taskDeps.safeReader && taskDeps.safeReader.getReadRoots ? taskDeps.safeReader.getReadRoots() : [],
       connections: S.connections.map(redactConnection),
+      agents: S.agents.map(publicAgent),
       tasks: S.tasks.map(publicTask),
       registry: Object.keys(registry).map((type) => ({
         type,
@@ -771,6 +1057,9 @@ function createCronEngine(opts = {}) {
     upsertConnection,
     deleteConnection,
     resolveConnection,
+    upsertAgent,
+    deleteAgent,
+    resolveAgent,
     persistNow,
     // helpers de teste
     _state: () => S,
@@ -787,6 +1076,10 @@ module.exports = {
   TASK_REGISTRY,
   buildDigestPrompt,
   renderDigestMarkdown,
+  interpolateTemplate,
+  buildSearchBlock,
+  buildPriorContext,
+  renderPipelineMarkdown,
   formatDateInTz,
   formatStampInTz,
   DEFAULT_DIGEST_SYSTEM,

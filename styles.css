@@ -1852,6 +1852,48 @@ details.profile-details.active-card {
 .row > .grow { flex: 1; }
 .row.cols2 { display: grid; grid-template-columns: 1fr 1fr; }
 
+/* Segmented control (ex: Standard | Avançado) */
+.segmented {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-2);
+  padding: 3px;
+  border-radius: var(--r-pill);
+}
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--fg-1);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  padding: 4px 14px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.segmented button.active {
+  background: var(--bg-0);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft);
+  font-weight: 600;
+}
+
+/* Card de passo da cascata (compacto) */
+.cron-step { gap: var(--s-2); }
+.cron-step-head { display: flex; align-items: center; gap: var(--s-2); }
+.cron-step-head .grow { flex: 1; }
+.step-idx {
+  width: 22px; height: 22px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft); color: var(--accent);
+  font-size: var(--fs-xs); font-weight: 700;
+}
+.cron-step-head select { max-width: 190px; }
+.cron-list-row { display: flex; align-items: center; gap: var(--s-2); }
+.cron-list-row .grow { flex: 1; min-width: 0; }
+.cron-list-row .cron-list-sub { color: var(--fg-2); font-size: var(--fs-xs); }
+
 .param-row {
   display: grid;
   grid-template-columns: 24px 200px 1fr 80px;

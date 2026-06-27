@@ -12,7 +12,7 @@ import {
 } from "./_shared.js";
 import {
   cronList, cronUpsertTask, cronDeleteTask, cronRunNow, cronResult,
-  cronUpsertConnection, cronDeleteConnection,
+  cronUpsertConnection, cronDeleteConnection, cronUpsertAgent, cronDeleteAgent,
 } from "../../api.js";
 import { renderMarkdown } from "../../markdown.js";
 
@@ -20,6 +20,8 @@ let cache = null;          // última resposta de /api/cron/list
 let editingTaskId = null;  // "new" | id | null
 let newTaskType = "web_search_digest";
 let editingConnId = null;  // "new" | id | null
+let editingAgentId = null; // "new" | id | null
+let setupOpen = null;      // estado do bloco "Conexões e agentes" (null = automático)
 let hostEl = null;         // container atual (pra re-render in-place sem perder editingId)
 
 const WEEKDAYS = ["Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado"];
@@ -28,6 +30,7 @@ export function panelCron() {
   // Entrada da aba: começa limpo (sem editor aberto).
   editingTaskId = null;
   editingConnId = null;
+  editingAgentId = null;
   const sec = section("Tarefas Agendadas");
   hostEl = document.createElement("div");
   hostEl.textContent = "Carregando…";
@@ -61,8 +64,21 @@ function render(host) {
     // Mesmo desabilitado o usuário pode configurar; só não dispara.
     host.appendChild(disabledHelp());
   }
-  host.appendChild(connectionsSection(cache));
+  // Tarefas em destaque no topo.
   host.appendChild(tasksSection(cache));
+  // Setup (conexões + agentes) recolhido — aberto só quando falta configurar
+  // ou quando um editor de conexão/agente está aberto.
+  const nConn = (cache.connections || []).length;
+  const nAgent = (cache.agents || []).length;
+  const autoOpen = nConn === 0 || editingConnId != null || editingAgentId != null;
+  const setup = collapsible("Conexões e agentes", {
+    open: setupOpen != null ? setupOpen : autoOpen,
+    suffix: `${nConn} ${nConn === 1 ? "conexão" : "conexões"} · ${nAgent} ${nAgent === 1 ? "agente" : "agentes"}`,
+  });
+  setup.el.addEventListener("toggle", () => { setupOpen = setup.el.open; });
+  setup.body.appendChild(connectionsSection(cache));
+  setup.body.appendChild(agentsSection(cache));
+  host.appendChild(setup.el);
 }
 
 /* ---------- helpers de UI ---------- */
@@ -119,22 +135,61 @@ function scheduleHuman(schedule) {
   return `cron: ${schedule.cron || "?"}${tz}`;
 }
 
+/* Bloco colapsável reutilizando o estilo `advanced-settings-details` (chevron animado).
+   suffix aparece em texto-mudo no cabeçalho, pra informar mesmo recolhido. */
+function collapsible(title, { open = false, suffix = "" } = {}) {
+  const det = document.createElement("details");
+  det.className = "advanced-settings-details";
+  if (open) det.open = true;
+  const sum = document.createElement("summary");
+  const t = document.createElement("span");
+  t.textContent = title;
+  sum.appendChild(t);
+  if (suffix) {
+    const s = document.createElement("span");
+    s.className = "field-help";
+    s.style.cssText = "margin:0 10px 0 auto;";
+    s.textContent = suffix;
+    sum.appendChild(s);
+  }
+  det.appendChild(sum);
+  const body = document.createElement("div");
+  body.style.cssText = "display:flex;flex-direction:column;gap:var(--s-3);";
+  det.appendChild(body);
+  return { el: det, body };
+}
+
+/* Controle segmentado (ex.: Standard | Avançado). Retorna { el, get }. */
+function segmented(options, value, onChange) {
+  const wrap = document.createElement("div");
+  wrap.className = "segmented";
+  let cur = value;
+  const btns = [];
+  for (const o of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = o.label;
+    if (o.value === cur) b.classList.add("active");
+    b.addEventListener("click", () => {
+      if (cur === o.value) return;
+      cur = o.value;
+      btns.forEach((x) => x.classList.toggle("active", x === b));
+      onChange(cur);
+    });
+    btns.push(b);
+    wrap.appendChild(b);
+  }
+  return { el: wrap, get: () => cur };
+}
+
 /* ---------- banner / status ---------- */
 
 function statusBanner(c) {
-  const div = card([]);
   const row = document.createElement("div");
   row.className = "row";
-  row.style.alignItems = "center";
-  row.appendChild(badge(c.enabled ? "Motor ATIVO" : "Motor DESLIGADO", c.enabled ? "ok" : "null"));
-  const info = document.createElement("span");
-  info.style.fontSize = "12px";
-  info.style.color = "var(--text-muted, #888)";
-  const roots = (c.writeRoots && c.writeRoots.length) ? c.writeRoots.join(", ") : "(nenhuma — defina FS_WRITE_ROOTS)";
-  info.textContent = `Pastas de escrita: ${roots}`;
-  row.appendChild(info);
-  div.appendChild(row);
-  return div;
+  row.style.marginBottom = "var(--s-3)";
+  row.appendChild(badge(c.enabled ? "Motor ativo" : "Motor desligado", c.enabled ? "ok" : "null"));
+  return row;
 }
 
 function disabledHelp() {
@@ -159,42 +214,51 @@ function disabledHelp() {
 /* ---------- conexões ---------- */
 
 function connectionsSection(c) {
-  const sec = section("Conexões LLM (headless)");
-  sec.appendChild(help(
-    "As tarefas rodam sem o navegador aberto, então usam conexões próprias (não o servidor de chat do localStorage). " +
-    "Aponte para o LM Studio local OU um endpoint sempre-online (ex: OpenRouter) para o boletim rodar de madrugada."
-  ));
+  const sec = section("Conexões LLM");
   for (const conn of c.connections) {
     sec.appendChild(editingConnId === conn.id ? connectionEditor(conn, c) : connectionCard(conn));
   }
   if (editingConnId === "new") sec.appendChild(connectionEditor(null, c));
-
-  const actions = document.createElement("div");
-  actions.className = "row";
-  actions.appendChild(button("+ Nova conexão", "btn-secondary", () => { editingConnId = "new"; rerender(); }));
-  actions.appendChild(button("Copiar do servidor de chat", "btn-ghost", copyFromChatServer));
-  sec.appendChild(actions);
+  if (editingConnId !== "new") {
+    const actions = document.createElement("div");
+    actions.className = "row";
+    actions.appendChild(button("+ Nova conexão", "btn-secondary", () => { editingConnId = "new"; setupOpen = true; rerender(); }));
+    actions.appendChild(button("Copiar do servidor de chat", "btn-ghost", copyFromChatServer));
+    sec.appendChild(actions);
+  }
   return sec;
 }
 
-function connectionCard(conn) {
+/* Linha compacta reutilizável pra conexões/agentes: título + subtítulo + Editar/×. */
+function listRow(title, subtitle, onEdit, onDelete) {
   const c = card([]);
-  const title = document.createElement("div");
-  title.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:8px;";
+  const row = document.createElement("div");
+  row.className = "cron-list-row";
+  const info = document.createElement("div");
+  info.className = "grow";
   const name = document.createElement("strong");
-  name.textContent = conn.nickname || conn.baseUrl;
-  title.appendChild(name);
-  const btns = document.createElement("div");
-  btns.className = "row";
-  btns.appendChild(button("Editar", "btn-ghost", () => { editingConnId = conn.id; rerender(); }));
-  btns.appendChild(button("×", "btn-ghost", async () => {
-    try { await cronDeleteConnection(conn.id); rerender(); }
-    catch (e) { state.toast(e.message, "error"); }
-  }));
-  title.appendChild(btns);
-  c.appendChild(title);
-  c.appendChild(help(`${conn.baseUrl}  ·  modelo: ${conn.model || "—"}  ·  chave: ${conn.hasApiKey ? (conn.apiKeyEnv ? `env ${conn.apiKeyEnv}` : "definida") : "nenhuma"}`));
+  name.textContent = title;
+  info.appendChild(name);
+  if (subtitle) {
+    const sub = document.createElement("div");
+    sub.className = "cron-list-sub";
+    sub.textContent = subtitle;
+    info.appendChild(sub);
+  }
+  row.appendChild(info);
+  row.appendChild(button("Editar", "btn-ghost btn-sm", onEdit));
+  row.appendChild(button("×", "btn-ghost btn-sm", onDelete));
+  c.appendChild(row);
   return c;
+}
+
+function connectionCard(conn) {
+  return listRow(
+    conn.nickname || conn.baseUrl,
+    `${conn.baseUrl} · ${conn.model || "modelo padrão"}`,
+    () => { editingConnId = conn.id; setupOpen = true; rerender(); },
+    async () => { try { await cronDeleteConnection(conn.id); rerender(); } catch (e) { state.toast(e.message, "error"); } }
+  );
 }
 
 function connectionEditor(conn, c) {
@@ -249,6 +313,88 @@ async function copyFromChatServer() {
   } catch (e) { state.toast(e.message, "error"); }
 }
 
+/* ---------- agentes reutilizáveis (skills) ---------- */
+
+function agentsSection(c) {
+  const sec = section("Agentes reutilizáveis");
+  for (const agent of c.agents || []) {
+    sec.appendChild(editingAgentId === agent.id ? agentEditor(agent, c) : agentCard(agent, c));
+  }
+  if (editingAgentId === "new") sec.appendChild(agentEditor(null, c));
+  if (editingAgentId !== "new") {
+    const actions = document.createElement("div");
+    actions.className = "row";
+    actions.appendChild(button("+ Novo agente", "btn-secondary", () => { editingAgentId = "new"; setupOpen = true; rerender(); }));
+    sec.appendChild(actions);
+  }
+  return sec;
+}
+
+function agentCard(agent, c) {
+  const conn = (c.connections || []).find((x) => x.id === agent.connectionId);
+  const tools = [];
+  if (agent.tools?.webSearch?.enabled) tools.push("busca web");
+  if (agent.tools?.fileRead?.enabled) tools.push("lê arquivo");
+  const sub = `${conn ? (conn.nickname || conn.baseUrl) : "sem conexão"} · ${agent.model || "modelo padrão"}` +
+    (tools.length ? ` · ${tools.join(", ")}` : "");
+  return listRow(
+    agent.name || "Agente",
+    sub,
+    () => { editingAgentId = agent.id; setupOpen = true; rerender(); },
+    async () => { try { await cronDeleteAgent(agent.id); rerender(); } catch (e) { state.toast(e.message, "error"); } }
+  );
+}
+
+function agentEditor(agent, c) {
+  const editing = !!agent;
+  const wrap = card([]);
+  const name = input({ type: "text", value: agent?.name || "", placeholder: "Ex: Pesquisador de mercado" });
+  const connSel = select((c.connections || []).map((x) => ({ value: x.id, label: x.nickname || x.baseUrl })), agent?.connectionId || "");
+  const model = input({ type: "text", value: agent?.model || "", placeholder: "vazio = modelo padrão da conexão" });
+  const sys = textarea(agent?.systemPrompt || "", 2, "persona — quem este agente é (ex: 'Você é um analista de mercado…')");
+  const defPrompt = textarea(agent?.defaultPrompt || "", 3, "instrução padrão — o que ele faz (pode ser sobrescrita no fluxo)");
+  const temp = input({ type: "number", min: 0, max: 2, step: 0.1, value: agent?.temperature ?? 0.3 });
+  const wsEnabled = checkbox("Buscar na web antes de responder", agent?.tools?.webSearch?.enabled ?? false, () => {});
+  const wsQuery = input({ type: "text", value: agent?.tools?.webSearch?.query || "", placeholder: "busca padrão (opcional)" });
+  const frEnabled = checkbox("Ler um arquivo local antes de responder", agent?.tools?.fileRead?.enabled ?? false, () => {});
+  const frRel = input({ type: "text", value: agent?.tools?.fileRead?.relPath || "", placeholder: "caminho/relativo.md (opcional)" });
+
+  if (!(c.connections || []).length) wrap.appendChild(errorCard("Crie uma conexão LLM acima primeiro."));
+  wrap.appendChild(field("Nome", name));
+  wrap.appendChild(field("Conexão LLM", connSel));
+  wrap.appendChild(field("Modelo", model));
+  wrap.appendChild(field("Persona (prompt de sistema)", sys));
+  wrap.appendChild(field("Instrução padrão", defPrompt));
+  wrap.appendChild(field("Temperatura", temp));
+  wrap.appendChild(wsEnabled);
+  wrap.appendChild(field("Busca padrão", wsQuery));
+  wrap.appendChild(frEnabled);
+  wrap.appendChild(field("Arquivo padrão", frRel));
+
+  const actions = document.createElement("div");
+  actions.className = "row";
+  actions.appendChild(button("Salvar", "btn-primary", async () => {
+    try {
+      await cronUpsertAgent({
+        id: editing ? agent.id : undefined,
+        name: name.value, connectionId: connSel.value, model: model.value.trim(),
+        systemPrompt: sys.value, defaultPrompt: defPrompt.value,
+        temperature: Number(temp.value),
+        tools: {
+          webSearch: { enabled: wsEnabled.querySelector("input").checked, query: wsQuery.value.trim() },
+          fileRead: { enabled: frEnabled.querySelector("input").checked, relPath: frRel.value.trim() },
+        },
+      });
+      editingAgentId = null;
+      state.toast("Agente salvo.", "success");
+      rerender();
+    } catch (e) { state.toast(e.message, "error"); }
+  }));
+  actions.appendChild(button("Cancelar", "btn-ghost", () => { editingAgentId = null; rerender(); }));
+  wrap.appendChild(actions);
+  return wrap;
+}
+
 /* ---------- tarefas ---------- */
 
 function tasksSection(c) {
@@ -294,7 +440,7 @@ function taskCard(task) {
       setTimeout(rerender, 2500);
     } catch (e) { state.toast(e.message, "error"); }
   }));
-  if (task.type === "web_search_digest") {
+  if (task.type === "web_search_digest" || task.type === "agent_pipeline") {
     actions.appendChild(button("Ver resultado", "btn-ghost", () => openResult(task)));
   }
   actions.appendChild(button("Editar", "btn-ghost", () => { editingTaskId = task.id; rerender(); }));
@@ -312,35 +458,43 @@ function taskEditor(task, c) {
   const reg = c.registry.find((r) => r.type === type) || c.registry[0];
   const wrap = card([]);
 
-  const name = input({ type: "text", value: task?.name || reg.label, placeholder: "Nome da tarefa" });
-  wrap.appendChild(field("Nome", name));
-
-  if (editing) {
-    wrap.appendChild(field("Tipo", (() => { const s = document.createElement("div"); s.textContent = reg.label; return s; })()));
-  } else {
+  // Tipo (só ao criar): primeiro, pois troca o formulário.
+  if (!editing) {
     const typeSel = select(c.registry.map((r) => ({ value: r.type, label: r.label })), type);
     typeSel.addEventListener("change", () => { newTaskType = typeSel.value; rerender(); });
     wrap.appendChild(field("Tipo", typeSel));
   }
 
+  // Header: nome (cresce) + toggle Ativa na mesma linha.
+  const name = input({ type: "text", value: task?.name || reg.label, placeholder: "Nome da tarefa" });
+  name.style.width = "100%";
   const enabled = checkbox("Ativa", task?.enabled ?? false, () => {});
-  wrap.appendChild(enabled);
+  const header = document.createElement("div");
+  header.className = "row";
+  const nameWrap = document.createElement("div");
+  nameWrap.className = "grow";
+  nameWrap.appendChild(name);
+  header.appendChild(nameWrap);
+  header.appendChild(enabled);
+  wrap.appendChild(header);
 
-  const sched = schedulePicker(task?.schedule);
-  wrap.appendChild(sched.el);
-
+  // Passos / opções da tarefa (primário).
   const opts = optionsForm(type, task?.options || reg.defaultOptions, c);
   wrap.appendChild(opts.el);
 
-  // política (avançado)
-  const det = document.createElement("details");
-  const sum = document.createElement("summary");
-  sum.textContent = "Opções avançadas (política de execução)";
-  det.appendChild(sum);
+  // Agendamento (recolhido, mostra o resumo no cabeçalho).
+  const sched = schedulePicker(task?.schedule);
+  const schedBlock = collapsible("Agendamento", { suffix: scheduleHuman(task?.schedule) });
+  schedBlock.body.appendChild(sched.el);
+  wrap.appendChild(schedBlock.el);
+
+  // Política de execução (avançado, recolhido).
+  const det = collapsible("Avançado · execução").el;
+  const detBody = det.querySelector("div");
   const catchUp = checkbox("Executar no boot se perdeu o horário (catch-up)", task?.policy?.catchUpOnStart ?? false, () => {});
   const timeoutS = input({ type: "number", min: 1, value: Math.round((task?.policy?.timeoutMs || 120000) / 1000) });
-  det.appendChild(catchUp);
-  det.appendChild(field("Timeout (segundos)", timeoutS));
+  detBody.appendChild(catchUp);
+  detBody.appendChild(field("Timeout (segundos)", timeoutS));
   wrap.appendChild(det);
 
   const actions = document.createElement("div");
@@ -526,6 +680,259 @@ function optionsForm(type, options, c) {
           return { writeRoot: (wr || "").trim(), relPath: rest.join("::").trim() };
         }).filter((s) => s.writeRoot && s.relPath),
       }),
+    };
+  }
+
+  if (type === "agent_pipeline") {
+    const conns = c.connections || [];
+    const connOpts = conns.map((x) => ({ value: x.id, label: x.nickname || x.baseUrl }));
+    const wsRoots = c.workspaceRoots || [];
+    const agentOpts = (c.agents || []).map((a) => ({ value: a.id, label: a.name || "Agente" }));
+    let mode = options.mode === "advanced" ? "advanced" : "standard";
+    const insertToken = (ta, token) => { ta.focus(); const s = ta.selectionStart, e = ta.selectionEnd; ta.setRangeText(token, s, e, "end"); };
+    function nextStepId() {
+      const ids = new Set(stepData.map((s) => s.id));
+      let n = stepData.length + 1;
+      while (ids.has("step" + n)) n++;
+      return "step" + n;
+    }
+
+    // Seletor de pasta de LEITURA (WORKSPACE_ROOTS). Inclui opção "padrão da cascata".
+    function readRootSelect(value, withDefault) {
+      if (wsRoots.length) {
+        const opts = wsRoots.map((r) => ({ value: r, label: r }));
+        const el = select(withDefault ? [{ value: "", label: "(padrão da cascata)" }, ...opts] : opts, value || "");
+        return { el, read: () => el.value };
+      }
+      const el = input({ type: "text", value: value || "", placeholder: "configure WORKSPACE_ROOTS no servidor" });
+      return { el, read: () => el.value.trim() };
+    }
+
+    // Estado local da lista de passos. Reorder/add/remove mexem AQUI e re-renderizam
+    // só o stepsHost — NÃO o rerender() global (que recarregaria do servidor e
+    // descartaria edições em andamento). Antes de cada mutação, syncFromDom() puxa os
+    // valores atuais dos inputs de volta pro stepData.
+    const stepData = (options.steps || []).map((s) => ({
+      id: s.id || "", name: s.name || "", agentId: s.agentId || "", connectionId: s.connectionId || "",
+      model: s.model || "", systemPrompt: s.systemPrompt || "", prompt: s.prompt || "",
+      temperature: s.temperature ?? 0.3,
+      webSearch: {
+        enabled: !!(s.webSearch && s.webSearch.enabled),
+        query: (s.webSearch && s.webSearch.query) || "",
+        maxResults: (s.webSearch && s.webSearch.maxResults) || 5,
+      },
+      fileRead: {
+        enabled: !!(s.fileRead && s.fileRead.enabled),
+        sourceRoot: (s.fileRead && s.fileRead.sourceRoot) || "",
+        relPath: (s.fileRead && s.fileRead.relPath) || "",
+      },
+    }));
+
+    const stepsHost = document.createElement("div");
+    let refs = [];
+    function syncFromDom() {
+      refs.forEach((r, i) => { if (r && stepData[i]) Object.assign(stepData[i], r.read()); });
+    }
+
+    function renderSteps() {
+      stepsHost.replaceChildren();
+      refs = [];
+      const adv = mode === "advanced";
+      stepData.forEach((sd, i) => {
+        const agentSel = select([{ value: "", label: "inline" }, ...agentOpts], sd.agentId);
+        const usingAgent = () => !!agentSel.value;
+        const nameIn = input({ type: "text", value: sd.name, placeholder: "Passo " + (i + 1) });
+        nameIn.style.width = "100%";
+        const promptIn = textarea(sd.prompt, 3, usingAgent() ? "(usa a instrução padrão do agente)" : "Escreva o que este agente deve fazer…");
+        let idIn = null, connSel = null, modelIn = null, sysIn = null, tempIn = null;
+        let wsEnabled = null, wsQuery = null, wsMax = null, frEnabled = null, frRoot = null, frRel = null;
+
+        const cardEl = card([]);
+        cardEl.classList.add("cron-step");
+
+        // Cabeçalho compacto: índice · nome · agente · ações
+        const hd = document.createElement("div");
+        hd.className = "cron-step-head";
+        const idx = document.createElement("span");
+        idx.className = "step-idx";
+        idx.textContent = String(i + 1);
+        hd.appendChild(idx);
+        const nameWrap = document.createElement("div");
+        nameWrap.className = "grow";
+        nameWrap.appendChild(nameIn);
+        hd.appendChild(nameWrap);
+        agentSel.addEventListener("change", () => { syncFromDom(); renderSteps(); });
+        if (agentOpts.length) hd.appendChild(agentSel);
+        const up = button("↑", "btn-ghost btn-sm", () => { syncFromDom(); if (i > 0) { const t = stepData[i - 1]; stepData[i - 1] = stepData[i]; stepData[i] = t; renderSteps(); } });
+        const down = button("↓", "btn-ghost btn-sm", () => { syncFromDom(); if (i < stepData.length - 1) { const t = stepData[i + 1]; stepData[i + 1] = stepData[i]; stepData[i] = t; renderSteps(); } });
+        const del = button("×", "btn-ghost btn-sm", () => { syncFromDom(); stepData.splice(i, 1); renderSteps(); });
+        if (i === 0) up.disabled = true;
+        if (i === stepData.length - 1) down.disabled = true;
+        hd.appendChild(up); hd.appendChild(down); hd.appendChild(del);
+        cardEl.appendChild(hd);
+
+        // Instrução (sempre visível)
+        cardEl.appendChild(promptIn);
+
+        if (adv) {
+          // botões de inserir token (clica em vez de digitar {{ }})
+          const ins = document.createElement("div");
+          ins.className = "row";
+          const prev = i > 0 ? stepData[i - 1].id : "";
+          const b1 = button("↪ saída anterior", "btn-ghost btn-sm", () => insertToken(promptIn, `{{steps.${prev}.output}}`));
+          if (!prev) b1.disabled = true;
+          ins.appendChild(b1);
+          ins.appendChild(button("📅 data", "btn-ghost btn-sm", () => insertToken(promptIn, "{{date}}")));
+          ins.appendChild(button("{x} variável", "btn-ghost btn-sm", () => insertToken(promptIn, "{{vars.}}")));
+          cardEl.appendChild(ins);
+
+          idIn = input({ type: "text", value: sd.id, placeholder: "id_unico" });
+          tempIn = input({ type: "number", min: 0, max: 2, step: 0.1, value: sd.temperature });
+          const grid = document.createElement("div");
+          grid.className = "row cols2";
+          grid.appendChild(field("ID", idIn));
+          grid.appendChild(field("Temperatura", tempIn));
+          cardEl.appendChild(grid);
+
+          if (!usingAgent()) {
+            connSel = select(connOpts, sd.connectionId || (connOpts[0] && connOpts[0].value) || "");
+            modelIn = input({ type: "text", value: sd.model, placeholder: "vazio = modelo da conexão" });
+            sysIn = textarea(sd.systemPrompt, 2, "persona (opcional)");
+            cardEl.appendChild(field("Conexão", connSel));
+            cardEl.appendChild(field("Modelo", modelIn));
+            cardEl.appendChild(field("Persona", sysIn));
+            wsEnabled = checkbox("Buscar na web antes", sd.webSearch.enabled, () => {});
+            wsQuery = input({ type: "text", value: sd.webSearch.query, placeholder: "o que buscar" });
+            wsMax = input({ type: "number", min: 1, max: 10, value: sd.webSearch.maxResults });
+            frEnabled = checkbox("Ler um arquivo local antes", sd.fileRead.enabled, () => {});
+            frRoot = readRootSelect(sd.fileRead.sourceRoot, true);
+            frRel = input({ type: "text", value: sd.fileRead.relPath, placeholder: "caminho/relativo.md" });
+            cardEl.appendChild(wsEnabled);
+            cardEl.appendChild(field("Busca", wsQuery));
+            cardEl.appendChild(field("Resultados por busca", wsMax));
+            cardEl.appendChild(frEnabled);
+            cardEl.appendChild(field("Pasta de leitura", frRoot.el));
+            cardEl.appendChild(field("Arquivo a ler", frRel));
+          }
+        } else if (!usingAgent()) {
+          // Standard inline: conexão + busca recolhidas em "⚙ ferramentas"
+          const tools = collapsible("⚙ ferramentas");
+          connSel = select(connOpts, sd.connectionId || (connOpts[0] && connOpts[0].value) || "");
+          wsEnabled = checkbox("Buscar na web antes", sd.webSearch.enabled, () => {});
+          wsQuery = input({ type: "text", value: sd.webSearch.query, placeholder: "o que buscar" });
+          tools.body.appendChild(field("Conexão", connSel));
+          tools.body.appendChild(wsEnabled);
+          tools.body.appendChild(field("Busca", wsQuery));
+          cardEl.appendChild(tools.el);
+        }
+
+        stepsHost.appendChild(cardEl);
+        refs.push({
+          read: () => ({
+            id: idIn ? (idIn.value.trim() || sd.id) : sd.id,
+            name: nameIn.value.trim(),
+            agentId: agentSel.value,
+            connectionId: connSel ? connSel.value : sd.connectionId,
+            model: modelIn ? modelIn.value.trim() : sd.model,
+            systemPrompt: sysIn ? sysIn.value : sd.systemPrompt,
+            prompt: promptIn.value,
+            temperature: tempIn ? Number(tempIn.value) : sd.temperature,
+            webSearch: wsEnabled
+              ? { enabled: wsEnabled.querySelector("input").checked, query: wsQuery.value.trim(), maxResults: wsMax ? (Number(wsMax.value) || 5) : (sd.webSearch.maxResults || 5) }
+              : sd.webSearch,
+            fileRead: frEnabled
+              ? { enabled: frEnabled.querySelector("input").checked, sourceRoot: frRoot.read(), relPath: frRel.value.trim() }
+              : sd.fileRead,
+          }),
+        });
+      });
+    }
+    renderSteps();
+
+    const addBtn = button("+ Passo", "btn-secondary", () => {
+      syncFromDom();
+      stepData.push({
+        id: nextStepId(), name: "", agentId: "",
+        connectionId: (connOpts[0] && connOpts[0].value) || "",
+        model: "", systemPrompt: "", prompt: "", temperature: 0.3,
+        webSearch: { enabled: false, query: "", maxResults: 5 },
+        fileRead: { enabled: false, sourceRoot: "", relPath: "" },
+      });
+      renderSteps();
+    });
+
+    const autoChain = checkbox("Encadear automaticamente (cada passo recebe a saída dos anteriores)", options.autoChain !== false, () => {});
+    const varsIn = textarea(Object.entries(options.vars || {}).map(([k, v]) => `${k}=${v}`).join("\n"), 2, "chave=valor por linha (ex: topico=IA local)");
+    const outRoot = writeRootField("Pasta de saída", options.outputWriteRoot, c);
+    const outDir = input({ type: "text", value: options.outputRelDir || "pipelines", placeholder: "pipelines" });
+    const outTitle = input({ type: "text", value: options.outputTitle || "", placeholder: "vazio = nome da tarefa" });
+    const readRoot = readRootSelect(options.fileReadRoot, false);
+    const notify = checkbox("Notificar quando concluir", options.notify ?? true, () => {});
+
+    // Extras só do modo Avançado (escondidos no Standard).
+    const advBox = document.createElement("div");
+    advBox.style.cssText = "display:flex;flex-direction:column;gap:var(--s-3);";
+    advBox.appendChild(autoChain);
+    advBox.appendChild(field("Variáveis", varsIn));
+    advBox.appendChild(field("Pasta de leitura padrão", readRoot.el, "WORKSPACE_ROOTS — pros passos que leem arquivo."));
+    function updateModeVisibility() { advBox.style.display = mode === "advanced" ? "" : "none"; }
+
+    // Saída recolhida (pasta/subpasta/título/notificação).
+    const saida = collapsible("Saída", { suffix: options.outputRelDir || "pipelines" });
+    if (c.writeRoots && c.writeRoots.length) saida.body.appendChild(help(`Grava em: ${c.writeRoots.join(", ")}`));
+    saida.body.appendChild(outRoot.field);
+    saida.body.appendChild(field("Subpasta", outDir));
+    saida.body.appendChild(field("Título do documento", outTitle));
+    saida.body.appendChild(notify);
+
+    // Controle segmentado Standard | Avançado.
+    const seg = segmented(
+      [{ value: "standard", label: "Standard" }, { value: "advanced", label: "Avançado" }],
+      mode,
+      (v) => { syncFromDom(); mode = v; updateModeVisibility(); renderSteps(); }
+    );
+    const modeRow = document.createElement("div");
+    modeRow.className = "row";
+    modeRow.style.justifyContent = "space-between";
+    const modeLbl = document.createElement("span");
+    modeLbl.className = "field-label";
+    modeLbl.textContent = "Modo";
+    modeRow.appendChild(modeLbl);
+    modeRow.appendChild(seg.el);
+    updateModeVisibility();
+
+    if (!conns.length) wrap.appendChild(errorCard("Crie uma conexão LLM primeiro (abra “Conexões e agentes”)."));
+    wrap.appendChild(modeRow);
+    wrap.appendChild(stepsHost);
+    wrap.appendChild(addBtn);
+    wrap.appendChild(advBox);
+    wrap.appendChild(saida.el);
+
+    return {
+      el: wrap,
+      read: () => {
+        syncFromDom();
+        const vars = {};
+        varsIn.value.split("\n").map((l) => l.trim()).filter(Boolean).forEach((l) => {
+          const eq = l.indexOf("=");
+          if (eq > 0) vars[l.slice(0, eq).trim()] = l.slice(eq + 1).trim();
+        });
+        return {
+          mode,
+          autoChain: autoChain.querySelector("input").checked,
+          steps: stepData.map((s) => ({
+            id: s.id, name: s.name, agentId: s.agentId, connectionId: s.connectionId, model: s.model,
+            systemPrompt: s.systemPrompt, prompt: s.prompt, temperature: s.temperature,
+            webSearch: s.webSearch, fileRead: s.fileRead,
+          })),
+          vars,
+          outputWriteRoot: outRoot.read(),
+          outputRelDir: outDir.value.trim() || "pipelines",
+          outputTitle: outTitle.value.trim(),
+          fileReadRoot: readRoot.read(),
+          notify: notify.querySelector("input").checked,
+        };
+      },
     };
   }
 

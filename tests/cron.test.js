@@ -17,6 +17,7 @@ const { parseCron, cronMatches, nextRunAfter, presetToCron, resolveCron, isValid
 const { createSafeWriter } = require("../server-lib/safe-write.js");
 const {
   createCronEngine, buildDigestPrompt, renderDigestMarkdown, formatDateInTz,
+  TASK_REGISTRY, interpolateTemplate, buildSearchBlock, buildPriorContext, renderPipelineMarkdown,
 } = require("../server-lib/cron-engine.js");
 
 let passed = 0;
@@ -242,6 +243,264 @@ test("formatDateInTz respeita timezone", () => {
   assert.equal(formatDateInTz(Date.parse("2026-05-30T02:00:00Z"), "America/Sao_Paulo"), "2026-05-29");
   assert.equal(formatDateInTz(Date.parse("2026-05-30T02:00:00Z"), "UTC"), "2026-05-30");
 });
+
+/* ───────────────────────── agent_pipeline (cascata) ───────────────────────── */
+section("agent_pipeline — helpers puros");
+test("interpolateTemplate resolve vars/steps/date; token ausente vira vazio", () => {
+  const scope = { vars: { x: "X" }, steps: { s1: { output: "S1" } }, date: "2026-06-26" };
+  assert.equal(interpolateTemplate("a {{vars.x}} b", scope), "a X b");
+  assert.equal(interpolateTemplate("{{ steps.s1.output }}", scope), "S1");
+  assert.equal(interpolateTemplate("{{date}}", scope), "2026-06-26");
+  assert.equal(interpolateTemplate("{{vars.naoexiste}}", scope), "");
+  assert.equal(interpolateTemplate("{{steps.s9.output}}", scope), "");
+  assert.equal(interpolateTemplate("{{desconhecido}}", scope), "");
+});
+test("interpolateTemplate é não-recursivo (output não injeta novos tokens)", () => {
+  const scope = { vars: { x: "{{vars.y}}", y: "SECRETO" }, steps: {}, date: "" };
+  // o valor de x contém um token, mas NÃO é re-expandido (uma única passada)
+  assert.equal(interpolateTemplate("{{vars.x}}", scope), "{{vars.y}}");
+});
+runProperty("interpolateTemplate: string sem {{ volta inalterada", fc.property(
+  fc.string(),
+  (s) => {
+    fc.pre(!s.includes("{{"));
+    return interpolateTemplate(s, { vars: {}, steps: {}, date: "" }) === s;
+  }
+));
+test("buildSearchBlock lista resultados; vazio vira (sem resultados)", () => {
+  const b = buildSearchBlock("ia", [{ title: "T", url: "http://a", snippet: "s" }]);
+  assert.ok(b.includes("ia") && b.includes("http://a") && b.includes("T"));
+  assert.ok(buildSearchBlock("x", []).includes("(sem resultados)"));
+});
+test("renderPipelineMarkdown: título, data, saída final e seção Passos", () => {
+  const md = renderPipelineMarkdown({
+    title: "P", dateStr: "2026-06-26", finalOutput: "DOC",
+    steps: [{ id: "s1", name: "A", model: "m", searched: true, readFile: true, chars: 3 }],
+  });
+  assert.ok(md.startsWith("# P"));
+  assert.ok(md.includes("2026-06-26") && md.includes("DOC") && md.includes("## Passos"));
+  assert.ok(md.includes("busca web") && md.includes("leitura de arquivo"));
+});
+
+section("agent_pipeline — validateOptions");
+test("rejeita steps vazio e outputWriteRoot ausente", () => {
+  const reg = TASK_REGISTRY.agent_pipeline;
+  assert.equal(reg.validateOptions({ steps: [], outputWriteRoot: "/r" }).ok, false);
+  assert.equal(reg.validateOptions({ steps: [{ id: "a", connectionId: "c", prompt: "p" }], outputWriteRoot: "" }).ok, false);
+});
+test("rejeita id duplicado/inválido e passo incompleto; aceita válido", () => {
+  const reg = TASK_REGISTRY.agent_pipeline;
+  const base = { outputWriteRoot: "/r" };
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", connectionId: "c", prompt: "p" }, { id: "a", connectionId: "c", prompt: "p" }] }).ok, false);
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a b", connectionId: "c", prompt: "p" }] }).ok, false);
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", connectionId: "", prompt: "p" }] }).ok, false);
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", connectionId: "c", prompt: "" }] }).ok, false);
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", connectionId: "c", prompt: "p" }] }).ok, true);
+});
+
+section("agent_pipeline — run() em cascata");
+{
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cron-pipe-"));
+  const sw = createSafeWriter({ writeRoots: [tmp], maxWriteBytes: 10 * 1024 * 1024 });
+  const calls = []; // conteúdos dos user prompts enviados ao LLM, em ordem
+  const fakeLLM = async ({ payload }) => {
+    const userMsg = payload.messages.find((m) => m.role === "user");
+    calls.push(userMsg.content);
+    return { content: `OUT[${payload.model}]`, reasoning: "", usage: null };
+  };
+  const fakeSearch = async (q) => ({ results: [{ title: "R", url: "http://x", snippet: `snip:${q}` }], provider: "fake" });
+  const fakeReader = { getReadRoots: () => [tmp], readSafeTextFile: async (root, rel) => ({ content: `FILE(${rel})`, size: 10 }) };
+
+  const e = createCronEngine({
+    enabled: true, stateFilePath: null, tickMs: 0, defaultTz: "UTC", maxTimeoutMs: 5000,
+    now: () => Date.parse("2026-06-26T12:00:00Z"),
+    taskDeps: { callLLMOnce: fakeLLM, webSearch: fakeSearch, safeWriter: sw, safeReader: fakeReader },
+  });
+  const conn = e.upsertConnection({ nickname: "C", baseUrl: "http://localhost:1234/v1", apiKey: "k", model: "m0" });
+
+  test("passo 2 recebe saída do passo 1 + busca + leitura; grava md; getResult lê", async () => {
+    const task = e.upsertTask({
+      type: "agent_pipeline", name: "Pipe", enabled: true,
+      schedule: { kind: "cron", cron: "* * * * *", tz: "UTC" },
+      options: {
+        outputWriteRoot: tmp, outputRelDir: "pipelines", vars: { topico: "IA" },
+        steps: [
+          { id: "step1", name: "A", connectionId: conn.id, prompt: "Pesquise {{vars.topico}}",
+            webSearch: { enabled: true, query: "{{vars.topico}} news", maxResults: 3 } },
+          { id: "step2", name: "B", connectionId: conn.id, model: "m2", prompt: "Resuma: {{steps.step1.output}}",
+            fileRead: { enabled: true, sourceRoot: tmp, relPath: "notas.md" } },
+        ],
+      },
+    });
+    const r = await e.runTask(e._state().tasks.find((t) => t.id === task.id), Date.parse("2026-06-26T12:00:00Z"));
+    assert.equal(r.status, "ok", JSON.stringify(r));
+    // passo 1: prompt interpolado + bloco de busca
+    assert.ok(calls[0].includes("Pesquise IA"), calls[0]);
+    assert.ok(calls[0].includes("snip:IA news"), calls[0]);
+    // passo 2: consome a saída do passo 1 e o arquivo lido
+    assert.ok(calls[1].includes("Resuma: OUT[m0]"), calls[1]);
+    assert.ok(calls[1].includes("FILE(notas.md)"), calls[1]);
+    // summary com fileRel + writeRoot (necessário p/ getResult)
+    assert.equal(r.summary.writeRoot, tmp);
+    assert.ok(r.summary.fileRel && r.summary.fileRel.endsWith(".md"));
+    // getResult relê o markdown gravado
+    const out = await e.getResult(task.id, null);
+    assert.ok(out.content.includes("OUT[m2]"), "documento final = saída do último passo");
+  });
+
+  test("conexão inexistente num passo falha o run com erro claro", async () => {
+    const task = e.upsertTask({
+      type: "agent_pipeline", name: "Bad", enabled: true,
+      schedule: { kind: "cron", cron: "* * * * *", tz: "UTC" },
+      options: { outputWriteRoot: tmp, steps: [{ id: "s1", connectionId: "nao-existe", prompt: "x" }] },
+    });
+    const r = await e.runTask(e._state().tasks.find((t) => t.id === task.id), Date.parse("2026-06-26T12:00:00Z"));
+    assert.equal(r.status, "error");
+    assert.match(r.error || "", /conexão LLM não configurada/);
+  });
+
+  try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+}
+
+/* ─────────────── agentes reutilizáveis + auto-chain (Standard) ─────────────── */
+section("agent_pipeline — buildPriorContext (auto-chain)");
+test("buildPriorContext junta saídas anteriores; vazio quando não há nada", () => {
+  const sums = [{ id: "a", name: "Pesquisa" }, { id: "b", name: "Análise" }];
+  const res = { a: { output: "AA" }, b: { output: "BB" } };
+  const ctx = buildPriorContext(sums, res);
+  assert.ok(ctx.includes("## Pesquisa") && ctx.includes("AA") && ctx.includes("## Análise") && ctx.includes("BB"));
+  assert.equal(buildPriorContext([], {}), "");
+  assert.equal(buildPriorContext([{ id: "a", name: "X" }], { a: { output: "" } }), "");
+});
+
+section("agent_pipeline — agentes (CRUD) e validateOptions");
+test("CRUD de agente: upsert/resolve/delete + getPublicState().agents", () => {
+  const e = mkEngine();
+  const conn = e.upsertConnection({ nickname: "C", baseUrl: "http://localhost:1234/v1", apiKey: "k", model: "m0" });
+  const a = e.upsertAgent({ name: "Pesquisador", connectionId: conn.id, systemPrompt: "Você é analista", defaultPrompt: "Pesquise", temperature: 0.4, tools: { webSearch: { enabled: true, query: "x" } } });
+  assert.ok(a.id);
+  const r = e.resolveAgent(a.id);
+  assert.equal(r.systemPrompt, "Você é analista");
+  assert.equal(r.tools.webSearch.enabled, true);
+  assert.equal(e.getPublicState().agents.length, 1);
+  e.deleteAgent(a.id);
+  assert.equal(e.resolveAgent(a.id), null);
+});
+test("validateOptions: passo só-agentId é válido; inline exige conexão+instrução; defaults", () => {
+  const reg = TASK_REGISTRY.agent_pipeline;
+  const base = { outputWriteRoot: "/r" };
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", agentId: "ag1" }] }).ok, true);
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a" }] }).ok, false); // sem agente e sem conexão/instrução
+  assert.equal(reg.validateOptions({ ...base, steps: [{ id: "a", connectionId: "c", prompt: "" }] }).ok, false);
+  const d = reg.defaultOptions();
+  assert.equal(d.mode, "standard");
+  assert.equal(d.autoChain, true);
+});
+
+section("agent_pipeline — run() com agente + auto-chain");
+// Cada teste cria SEU PRÓPRIO engine/calls — os test() async rodam concorrentemente,
+// então compartilhar o array de chamadas embaralharia as asserções.
+function mkPipeEnv() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cron-ag-"));
+  const sw = createSafeWriter({ writeRoots: [tmp], maxWriteBytes: 10 * 1024 * 1024 });
+  const calls = [];
+  const e = createCronEngine({
+    enabled: true, stateFilePath: null, tickMs: 0, defaultTz: "UTC", maxTimeoutMs: 5000,
+    now: () => Date.parse("2026-06-26T12:00:00Z"),
+    taskDeps: {
+      callLLMOnce: async ({ payload }) => {
+        calls.push({ model: payload.model, system: (payload.messages.find((m) => m.role === "system") || {}).content || "", user: payload.messages.find((m) => m.role === "user").content });
+        return { content: `OUT[${payload.model}]`, reasoning: "", usage: null };
+      },
+      webSearch: async (q) => ({ results: [{ title: "R", url: "http://x", snippet: `s:${q}` }], provider: "fake" }),
+      safeWriter: sw,
+      safeReader: { getReadRoots: () => [tmp], readSafeTextFile: async () => ({ content: "F", size: 1 }) },
+    },
+  });
+  const conn = e.upsertConnection({ nickname: "C", baseUrl: "http://localhost:1234/v1", apiKey: "k", model: "m0" });
+  return { e, conn, calls, tmp };
+}
+
+test("passo via agentId herda persona/modelo/ferramentas; auto-chain leva a saída adiante", async () => {
+  const { e, conn, calls } = mkPipeEnv();
+  const ag = e.upsertAgent({ name: "Pesquisador", connectionId: conn.id, model: "mAgent", systemPrompt: "Você é analista", defaultPrompt: "Pesquise o tema", temperature: 0.1, tools: { webSearch: { enabled: true, query: "tema news" } } });
+  const task = e.upsertTask({
+    type: "agent_pipeline", name: "P1", enabled: true,
+    schedule: { kind: "cron", cron: "* * * * *", tz: "UTC" },
+    options: {
+      mode: "standard", autoChain: true, outputWriteRoot: e.getPublicState().writeRoots[0],
+      steps: [
+        { id: "step1", agentId: ag.id },
+        { id: "step2", connectionId: conn.id, prompt: "Resuma o que veio antes." },
+      ],
+    },
+  });
+  const r = await e.runTask(e._state().tasks.find((t) => t.id === task.id), Date.parse("2026-06-26T12:00:00Z"));
+  assert.equal(r.status, "ok", JSON.stringify(r));
+  assert.equal(calls[0].model, "mAgent");
+  assert.ok(calls[0].system.includes("Você é analista"));
+  assert.ok(calls[0].user.includes("Pesquise o tema") && calls[0].user.includes("s:tema news"));
+  assert.ok(calls[1].user.includes("Resuma o que veio antes."));
+  assert.ok(calls[1].user.includes("OUT[mAgent]"), calls[1].user);
+});
+
+test("token {{steps...}} explícito NÃO duplica via auto-chain", async () => {
+  const { e, conn, calls } = mkPipeEnv();
+  const task = e.upsertTask({
+    type: "agent_pipeline", name: "P2", enabled: true,
+    schedule: { kind: "cron", cron: "* * * * *", tz: "UTC" },
+    options: {
+      autoChain: true, outputWriteRoot: e.getPublicState().writeRoots[0],
+      steps: [
+        { id: "step1", connectionId: conn.id, prompt: "Gere X" },
+        { id: "step2", connectionId: conn.id, prompt: "Use {{steps.step1.output}} uma vez." },
+      ],
+    },
+  });
+  const r = await e.runTask(e._state().tasks.find((t) => t.id === task.id), Date.parse("2026-06-26T12:00:00Z"));
+  assert.equal(r.status, "ok", JSON.stringify(r));
+  const occurrences = calls[1].user.split("OUT[m0]").length - 1;
+  assert.equal(occurrences, 1, "saída do passo 1 deve aparecer exatamente uma vez (sem prepend duplicado)");
+});
+
+/* ─────────────── server safeReader — leitura confinada (async) ───────────────
+   A confinação em si (../, absoluto, WORKSPACE_ROOTS, symlink) é testada via
+   resolveSafePath na suíte security-server. Aqui cobrimos o wrapper async usado
+   pelo cron: leitura ok, propagação do guard, rejeição de binário e de tamanho. */
+section("server safeReader — leitura confinada");
+{
+  const sdir = fs.mkdtempSync(path.join(os.tmpdir(), "cron-read-"));
+  fs.mkdirSync(path.join(sdir, "sub"));
+  fs.writeFileSync(path.join(sdir, "sub", "ok.txt"), "hello", "utf8");
+  fs.writeFileSync(path.join(sdir, "sub", "bin.dat"), Buffer.from([0x00, 0x01, 0x02]));
+  fs.writeFileSync(path.join(sdir, "big.txt"), "x".repeat(300 * 1024), "utf8");
+
+  // env determinístico antes de carregar o server (lê env no eval)
+  const prev = { WR: process.env.WORKSPACE_ROOTS, MFB: process.env.MAX_FILE_BYTES };
+  process.env.WORKSPACE_ROOTS = sdir;
+  delete process.env.MAX_FILE_BYTES; // usa default 256 KiB
+  delete require.cache[require.resolve("../server.js")];
+  const srv = require("../server.js");
+  if (prev.WR == null) delete process.env.WORKSPACE_ROOTS; else process.env.WORKSPACE_ROOTS = prev.WR;
+  if (prev.MFB == null) delete process.env.MAX_FILE_BYTES; else process.env.MAX_FILE_BYTES = prev.MFB;
+
+  test("lê texto dentro do root", async () => {
+    const r = await srv.safeReader.readSafeTextFile(sdir, "sub/ok.txt");
+    assert.equal(r.content, "hello");
+  });
+  test("propaga o guard: traversal e path absoluto são bloqueados", async () => {
+    await assert.rejects(() => srv.safeReader.readSafeTextFile(sdir, "../escape.txt"), /relPath|Acesso/);
+    await assert.rejects(() => srv.safeReader.readSafeTextFile(sdir, path.resolve(os.tmpdir(), "x.txt")), /relPath/);
+  });
+  test("rejeita binário (byte nulo)", async () => {
+    await assert.rejects(() => srv.safeReader.readSafeTextFile(sdir, "sub/bin.dat"), /binário/);
+  });
+  test("rejeita arquivo maior que MAX_FILE_BYTES", async () => {
+    await assert.rejects(() => srv.safeReader.readSafeTextFile(sdir, "big.txt"), /maior que/);
+  });
+  // tmp dir deixado de propósito (testes async concorrentes ainda podem lê-lo);
+  // fica em os.tmpdir(), limpo pelo SO.
+}
 
 /* ───────────────────────── regressões (code-review) ───────────────────────── */
 section("regressões — bugs corrigidos no review");

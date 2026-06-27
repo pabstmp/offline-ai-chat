@@ -1109,6 +1109,21 @@ const safeWriter = createSafeWriter({
   maxWriteBytes: MAX_WRITE_BYTES,
 });
 
+/* Camada de LEITURA segura: usa a whitelist de WORKSPACE_ROOTS (mesma de /api/fs/read),
+   SEPARADA do safeWriter (FS_WRITE_ROOTS). Reaproveita resolveSafePath + os guards de
+   tamanho/binário. Usado pelo cron (ex.: passo de cascata que lê um arquivo local). */
+const safeReader = {
+  getReadRoots: () => getAllowedWorkspaceRoots(),
+  async readSafeTextFile(sourceRoot, relPath) {
+    const { absolute } = resolveSafePath(sourceRoot, relPath); // valida ../, absoluto, symlink
+    const st = await fsp.stat(absolute);
+    if (!st.isFile()) throw new Error("relPath não é um arquivo.");
+    if (st.size > MAX_FILE_BYTES) throw new Error(`Arquivo maior que ${MAX_FILE_BYTES} bytes.`);
+    if (await isProbablyBinary(absolute)) throw new Error("Arquivo binário não suportado.");
+    return { content: await fsp.readFile(absolute, "utf8"), size: st.size };
+  },
+};
+
 /* Caller LLM in-process (não-streaming). Reaproveita o guard SSRF do proxy
    (normalizeBaseUrl → isAllowedProxyTarget) como fonte única. */
 const { callLLMOnce } = createLlmCaller({ normalizeBaseUrl, isOpenRouterHost });
@@ -1124,6 +1139,7 @@ const cron = createCronEngine({
     callLLMOnce,
     webSearch: (query) => webSearchCore(query, ""), // usa Brave key do env (fallback DDG)
     safeWriter,
+    safeReader,
   },
   log: console,
 });
@@ -1161,6 +1177,13 @@ async function handleCronApi(request, response, pathname, body) {
     }
     if (pathname === "/api/cron/connection-delete") {
       return sendJson(response, 200, cron.deleteConnection(String(body.id || "")));
+    }
+    if (pathname === "/api/cron/agent-upsert") {
+      // Agente referencia uma conexão (já validada por SSRF no upsert dela) — sem guard extra.
+      return sendJson(response, 200, { agent: cron.upsertAgent(body.agent || {}) });
+    }
+    if (pathname === "/api/cron/agent-delete") {
+      return sendJson(response, 200, cron.deleteAgent(String(body.id || "")));
     }
     return sendJson(response, 404, { error: { message: "Endpoint cron não encontrado." } });
   } catch (err) {
@@ -1569,6 +1592,7 @@ module.exports = {
   webSearchCore,
   cron,
   safeWriter,
+  safeReader,
   config: {
     HOST,
     PORT,

@@ -577,6 +577,30 @@ As tarefas rodam sem o navegador, então **não enxergam** o servidor de chat qu
 
 Use **Executar agora** pra testar sem esperar o horário, e **Ver resultado** pra ler o último boletim renderizado. Se marcou "Notificar", o app avisa quando um boletim novo fica pronto (precisa permitir notificações do navegador).
 
+### Cascata de agentes (vários passos encadeados)
+
+O tipo **Cascata de agentes** deixa você desenhar um job com **vários passos de LLM em sequência**, em vez de uma única chamada. Cada passo é um "agente" — e a saída de um passo fica disponível pro próximo. Exemplo clássico: *passo 1 pesquisa e resume* → *passo 2 analisa* → *passo 3 escreve o relatório final*. **Não precisa programar** — é tudo formulário.
+
+#### Modo Standard (simples, recomendado)
+
+1. **+ Nova tarefa** → tipo **Cascata de agentes** (já vem no modo **Standard**).
+2. **+ Passo** pra adicionar agentes; **↑ / ↓** reordena, **× remover** apaga. Por passo:
+   - **Agente**: escolha um **agente salvo** (reuso, um clique) ou deixe **inline** pra escrever do zero.
+   - **Instrução**: o que esse agente deve fazer, em **português normal** — ex: *"Com base no que foi levantado, escreva 3 mensagens de marketing."* Não precisa de código nem tokens: cada passo **recebe automaticamente a saída dos anteriores**.
+   - **Buscar na web antes** (opcional): pesquisa e injeta os resultados antes de chamar o LLM.
+3. **Pasta de saída** + **Subpasta**: onde o markdown final é gravado (o documento é a saída do **último** passo; um resumo dos passos vai no rodapé).
+4. Defina **Frequência**, marque **Ativa**, salve. **Ver resultado** mostra o documento como no boletim.
+
+#### Agentes reutilizáveis (habilidades)
+
+Na seção **Agentes reutilizáveis** você cria uma "habilidade" **uma vez** e usa em vários fluxos: nome, conexão/modelo, **persona** (prompt de sistema), **instrução padrão** e ferramentas (web/arquivo). Depois, em qualquer passo, é só escolher o agente no dropdown. Quer mudar a tarefa do agente num fluxo específico? Escreva uma instrução no passo que ela **sobrescreve** a padrão.
+
+#### Modo Avançado
+
+Pra montar fluxos não-lineares ou controlar o encadeamento, troque **Modo → Avançado**. Aí aparecem: **botões de inserir** (`↪ saída do passo anterior`, `📅 data`, `{x} variável`) que colam o token no cursor — você não digita `{{ }}` na mão; **ID** de cada passo; **persona/modelo/temperatura** por passo; e o toggle **Encadear automaticamente**. Os tokens (`{{steps.<id>.output}}`, `{{vars.<chave>}}`, `{{date}}`) continuam existindo, mas como recurso opcional.
+
+> 💡 Cascatas com vários passos fazem várias chamadas de LLM seguidas. Em **Opções avançadas → Timeout**, aumente o valor (ele é o orçamento **total** da cascata) se os passos forem longos — modelos com "raciocínio" (reasoning) são mais lentos.
+
 ### Outras tarefas
 
 - **Rotação de arquivos/logs**: trunca/arquiva arquivos que passaram de um tamanho (útil em deploy nativo que redireciona `stdout`/`stderr` pra arquivo, ou pra podar boletins antigos). No Docker os logs do container já são rotacionados pelo runtime — aqui serve pra limpar a pasta de saída.

@@ -345,4 +345,10 @@ export function cronUpsertConnection(connection) {
 export function cronDeleteConnection(id) {
   return cronPost("/api/cron/connection-delete", { id });
 }
+export function cronUpsertAgent(agent) {
+  return cronPost("/api/cron/agent-upsert", { agent });
+}
+export function cronDeleteAgent(id) {
+  return cronPost("/api/cron/agent-delete", { id });
+}
 
