@@ -101,7 +101,7 @@ export function panelWorkspace() {
     const root = prompt(
       "Path absoluto da pasta no disco onde o servidor está rodando.\n" +
       "Exemplos:\n" +
-      "  C:\\Users\\pabst\\Documents\\CloudControl\n" +
+      "  C:\\Users\\usuario\\Documents\\projeto\n" +
       "  /home/user/projeto\n" +
       "  /workspace  (se rodando em Docker com volume montado)"
     );
