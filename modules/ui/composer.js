@@ -365,9 +365,70 @@ function showImagePreview(dataUrl) {
   }
 }
 
+export function initDropZone(messagesElement) {
+  if (!messagesElement) return;
+  let overlay = document.getElementById("drop-zone-overlay");
+  if (!overlay) {
+    overlay = document.createElement("div");
+    overlay.id = "drop-zone-overlay";
+    overlay.className = "drop-zone-overlay";
+    overlay.setAttribute("role", "region");
+    overlay.setAttribute("aria-label", "Área para soltar imagem");
+    overlay.innerHTML = `<span>Solte a imagem aqui</span>`;
+    messagesElement.appendChild(overlay);
+  }
+
+  let dragCounter = 0;
+
+  messagesElement.addEventListener("dragenter", (e) => {
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    dragCounter++;
+    overlay.classList.add("active");
+  });
+
+  messagesElement.addEventListener("dragover", (e) => {
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+
+  messagesElement.addEventListener("dragleave", (e) => {
+    dragCounter--;
+    if (dragCounter <= 0) {
+      dragCounter = 0;
+      overlay.classList.remove("active");
+    }
+  });
+
+  messagesElement.addEventListener("drop", (e) => {
+    dragCounter = 0;
+    overlay.classList.remove("active");
+    if (!hasImageFile(e)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer?.files || [];
+    const file = [...files].find((f) => f.type.startsWith("image/"));
+    if (file) handleImageFile(file);
+  });
+}
+
+export function updateVisionIndicator(isVisionModel) {
+  const btn = document.getElementById("imageUploadButton");
+  if (!btn) return;
+  if (isVisionModel) {
+    btn.classList.remove("vision-warning");
+    btn.title = "Anexar imagem";
+  } else {
+    btn.classList.add("vision-warning");
+    btn.title = "Anexar imagem (Este modelo pode não suportar imagens)";
+  }
+}
+
 export function clearComposer() {
   elements.promptInput.value = "";
   lastLength = -1;
+  clearPendingImage();
   autoResize();
   updateTokenCount();
 }

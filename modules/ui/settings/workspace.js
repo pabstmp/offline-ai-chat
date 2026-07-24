@@ -303,6 +303,15 @@ function buildRagGlobalSection() {
     return wrap;
   };
 
+  ragCard.appendChild(checkbox("Re-ranking de diversidade MMR (Maximal Marginal Relevance)", ragCfg.useMMR !== false, (v) => {
+    ragCfg.useMMR = v;
+    onChange();
+  }));
+
+  if (ragCfg.useMMR !== false) {
+    ragCard.appendChild(sliderRow("Fator Lambda do MMR (Relevância vs Diversidade)", "mmrLambda", 0.1, 1.0, 0.05, ""));
+  }
+
   const autoDetails = document.createElement("details");
   autoDetails.className = "advanced-settings-details compact-details";
   const autoSummary = document.createElement("summary");

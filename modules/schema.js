@@ -277,6 +277,8 @@ function ragDefaults() {
     maxPerFile: 2,
     batchSize: 32,
     activeForNextMessage: true,
+    useMMR: true,
+    mmrLambda: 0.7,
     reranking: {
       enabled: false,
       rerankModel: "",

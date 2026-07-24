@@ -1,3 +1,5 @@
+import { fsList, fsRead, fsSearch } from "../workspace/fsbridge.js";
+
 /* Tool Manager — handles registration, validation and execution of tools. */
 
 const BUILTIN_PREFIX = "builtin-";
@@ -45,6 +47,51 @@ export function getBuiltInTools() {
       },
       implementation: "builtin:run_javascript",
       enabled: false,
+      builtIn: true,
+    },
+    {
+      id: "builtin-fs_list",
+      name: "fs_list",
+      description: "Lista arquivos e pastas no diretório do workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Caminho da pasta (ex: '' para a raiz ou 'src')" }
+        },
+        required: []
+      },
+      implementation: "builtin:fs_list",
+      enabled: true,
+      builtIn: true,
+    },
+    {
+      id: "builtin-fs_read",
+      name: "fs_read",
+      description: "Lê o conteúdo de um arquivo de texto no workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Caminho relativo do arquivo (ex: 'app.js' ou 'README.md')" }
+        },
+        required: ["path"]
+      },
+      implementation: "builtin:fs_read",
+      enabled: true,
+      builtIn: true,
+    },
+    {
+      id: "builtin-fs_search",
+      name: "fs_search",
+      description: "Pesquisa por texto nos arquivos do workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Texto a pesquisar nos arquivos" }
+        },
+        required: ["query"]
+      },
+      implementation: "builtin:fs_search",
+      enabled: true,
       builtIn: true,
     },
   ];
@@ -121,6 +168,36 @@ async function executeBuiltIn(name, args, options) {
 
     case "run_javascript":
       return runInSandbox(args.code, args || {}, 5000, options.signal);
+
+    case "fs_list": {
+      const root = options.sourceRoot || "";
+      try {
+        const entries = await fsList(root, args.path || "");
+        return serializeToolResult(entries.map(e => ({ path: e.path || e.name, isDir: e.isDir })));
+      } catch (err) {
+        return `Erro ao listar diretório: ${err.message}`;
+      }
+    }
+
+    case "fs_read": {
+      const root = options.sourceRoot || "";
+      try {
+        const res = await fsRead(root, args.path);
+        return res.content || res.text || serializeToolResult(res);
+      } catch (err) {
+        return `Erro ao ler arquivo: ${err.message}`;
+      }
+    }
+
+    case "fs_search": {
+      const root = options.sourceRoot || "";
+      try {
+        const matches = await fsSearch(root, args.query);
+        return serializeToolResult(matches);
+      } catch (err) {
+        return `Erro ao pesquisar arquivos: ${err.message}`;
+      }
+    }
 
     default:
       return `Erro: implementação built-in '${name}' não encontrada.`;

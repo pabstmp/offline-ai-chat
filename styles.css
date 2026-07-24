@@ -2338,6 +2338,36 @@ body::after {
   color: var(--danger);
 }
 
+.drop-zone-overlay {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-0);
+  opacity: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: var(--r-lg);
+  z-index: 50;
+  transition: opacity var(--t-fast);
+}
+
+.drop-zone-overlay.active {
+  opacity: 0.92;
+  pointer-events: auto;
+}
+
+.drop-zone-overlay span {
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+#imageUploadButton.vision-warning svg {
+  color: var(--warn, #e6a23c);
+}
+
 /* =========================================================================
    RAG Indexing Indicator (R6)
    ========================================================================= */

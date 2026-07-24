@@ -58,6 +58,10 @@ import {
   buildImageMessageContent,
 } from "../modules/ui/composer-helpers.js";
 
+import { isLikelyVisionModel } from "../modules/model-catalog.js";
+import { mmrRerank } from "../modules/rag/retriever.js";
+import { getBuiltInTools } from "../modules/tools/manager.js";
+
 import {
   createTemplate,
   initConversationFromTemplate,
@@ -891,6 +895,49 @@ runProperty(
     const result = intentFromRegex(query);
     return result === "comparative" || result === "summary" || result === null;
   })
+);
+
+section("Item 2A — Vision Model Detection: isLikelyVisionModel");
+
+assert(isLikelyVisionModel("gemma-4-26b") === true, "isLikelyVisionModel detects gemma-4-26b");
+assert(isLikelyVisionModel("LLAVA-v1.6") === true, "isLikelyVisionModel is case-insensitive for LLaVA");
+assert(isLikelyVisionModel("qwen-vl-max") === true, "isLikelyVisionModel detects qwen-vl");
+assert(isLikelyVisionModel("llama-3.1-8b") === false, "isLikelyVisionModel returns false for non-vision model");
+assert(isLikelyVisionModel(null) === false, "isLikelyVisionModel returns false for null");
+
+runProperty(
+  "Property VLM-1: isLikelyVisionModel is case-insensitive for known VLM patterns",
+  fc.property(fc.constantFrom("gemma-4", "llava", "qwen-vl", "pixtral", "minicpm-v"), (pattern) => {
+    return isLikelyVisionModel(pattern.toUpperCase()) === true;
+  })
+);
+
+section("Item 2B — Tool Manager: getBuiltInTools");
+
+assert(
+  (() => {
+    const tools = getBuiltInTools();
+    const names = tools.map((t) => t.name);
+    return names.includes("fs_list") && names.includes("fs_read") && names.includes("fs_search");
+  })(),
+  "getBuiltInTools includes workspace tools fs_list, fs_read, fs_search"
+);
+
+section("Item 2D — RAG Reranking: mmrRerank");
+
+assert(
+  (() => {
+    const qVec = new Float32Array([1, 0, 0]);
+    const candidates = [
+      { id: "1", vec: new Float32Array([1, 0, 0]), score: 1.0 },
+      { id: "2", vec: new Float32Array([0.99, 0.01, 0]), score: 0.99 },
+      { id: "3", vec: new Float32Array([0.5, 0.866, 0]), score: 0.5 },
+    ];
+    const reranked = mmrRerank(qVec, candidates, 2, 0.5);
+    // Should pick #1 (highest sim) then #3 (more diverse than #2)
+    return reranked.length === 2 && reranked[0].id === "1" && reranked[1].id === "3";
+  })(),
+  "mmrRerank promotes diverse candidate when lambda balances similarity and diversity"
 );
 
 // ═════════════════════════════════════════════════════════════════════════════

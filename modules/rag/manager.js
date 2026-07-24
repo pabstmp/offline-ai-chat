@@ -92,6 +92,8 @@ export async function retrieve({
   coverAllFiles = false,
   exhaustive = false,
   charBudget = 100000,
+  useMMR = true,
+  mmrLambda = 0.7,
   rerankConfig = null,
   signal = null,
 }) {
@@ -128,7 +130,7 @@ export async function retrieve({
   
   const effectiveK = rerankConfig?.enabled && rerankConfig?.rerankModel ? (rerankConfig.candidateK || k * 3) : k;
   
-  const candidates = topK(queryVec, chunks, effectiveK, { maxPerFile, includeFirstPerFile, coverAllFiles });
+  const candidates = topK(queryVec, chunks, effectiveK, { maxPerFile, includeFirstPerFile, coverAllFiles, useMMR, mmrLambda });
   
   if (rerankConfig?.enabled && rerankConfig?.rerankModel) {
     try {

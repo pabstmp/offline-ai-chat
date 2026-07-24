@@ -114,6 +114,12 @@ export function topK(queryVec, chunks, k = 5, opts = {}) {
     return result;
   }
 
+  // MMR (Maximal Marginal Relevance) mode if requested
+  if (opts.useMMR) {
+    const lambda = typeof opts.mmrLambda === "number" ? opts.mmrLambda : 0.7;
+    return mmrRerank(queryVec, scored, Math.max(1, k), lambda);
+  }
+
   // No diversification — return raw top-K
   if (!maxPerFile || maxPerFile <= 0) {
     return scored.slice(0, Math.max(1, k));
@@ -140,6 +146,56 @@ export function topK(queryVec, chunks, k = 5, opts = {}) {
     }
   }
   return result;
+}
+
+/**
+ * Maximal Marginal Relevance (MMR) re-ranking over candidate chunks.
+ * Balances relevance to query (querySim) and diversity among selected chunks (maxSimToSelected).
+ *
+ * @param {Float32Array} queryVec
+ * @param {Array<{id, vec, score, ...}>} candidateChunks - scored chunks sorted by similarity
+ * @param {number} k - target count
+ * @param {number} lambda - trade-off parameter (0..1). Higher = similarity, lower = diversity. Default 0.7.
+ * @returns {Array<{id, vec, score, mmrScore, ...}>}
+ */
+export function mmrRerank(queryVec, candidateChunks, k = 5, lambda = 0.7) {
+  if (!candidateChunks?.length) return [];
+  const pool = candidateChunks.slice(0, Math.max(k * 3, 20));
+  const selected = [];
+  const remaining = [...pool];
+
+  while (selected.length < k && remaining.length > 0) {
+    let bestIdx = -1;
+    let bestMmrScore = -Infinity;
+
+    for (let i = 0; i < remaining.length; i++) {
+      const cand = remaining[i];
+      const simToQuery = cand.score !== undefined ? cand.score : dot(queryVec, cand.vec);
+
+      let maxSimToSelected = 0;
+      if (selected.length > 0) {
+        for (const sel of selected) {
+          const sim = dot(cand.vec, sel.vec);
+          if (sim > maxSimToSelected) maxSimToSelected = sim;
+        }
+      }
+
+      const mmrScore = lambda * simToQuery - (1 - lambda) * maxSimToSelected;
+      if (mmrScore > bestMmrScore) {
+        bestMmrScore = mmrScore;
+        bestIdx = i;
+      }
+    }
+
+    if (bestIdx >= 0) {
+      const picked = remaining.splice(bestIdx, 1)[0];
+      selected.push({ ...picked, mmrScore: bestMmrScore });
+    } else {
+      break;
+    }
+  }
+
+  return selected;
 }
 
 /* Dot product of two equal-length Float32Array.
