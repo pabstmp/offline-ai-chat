@@ -30,11 +30,13 @@ Self-hosted web client for [LM Studio](https://lmstudio.ai/) with **offline RAG*
 
 ## Features
 
-- **RAG over local files** — index folders of PDFs / code / docs, ask questions, get answers grounded in *your* content. Auto-detects whether your query needs comparative coverage (lists, totals, ranking) or a pointed lookup, and adjusts retrieval accordingly.
+- **Multimodal Vision (VLM)** — drag-and-drop or upload PNG/JPG/GIF/WebP images to ask questions to vision models (Gemma 4, LLaVA, Qwen-VL, Pixtral). VLM capability is auto-detected with visual warnings for non-vision models.
+- **Workspace Agent Mode (Tool Calling)** — toggle Agent Mode in the composer so models can autonomously explore, list, read, and search files in your workspace (`fs_list`, `fs_read`, `fs_search`).
+- **MMR RAG over local files** — index folders of PDFs / code / docs with Maximal Marginal Relevance (MMR) diversification. Auto-detects whether your query needs comparative coverage, summary, or pointed lookup.
 - **OCR for scanned PDFs** — `tesseract.js` + `@napi-rs/canvas` fallback when a PDF has no text layer. Pages are rendered to PNG and OCR'd transparently. Multilingual (`por+eng` by default, configurable).
 - **State-of-the-art embeddings** — defaults to `Qwen3-Embedding-4B` (top MTEB multilingual). Easy to switch from the UI.
 - **Profiles, servers, sampling** — multiple LM Studio endpoints, per-profile system prompt + sampling parameters (`temperature`, `top_p`, `top_k`, `min_p`, `max_tokens`, etc.).
-- **Reasoning model support** — surfaces chain-of-thought in a collapsible block, auto-bumps `max_tokens` if a thinking model exhausts the budget.
+- **Reasoning model support** — surfaces chain-of-thought in a collapsible block with real-time token estimation and metrics, auto-bumps `max_tokens` if a thinking model exhausts the budget.
 - **Cloud LLM integrations** — native support for [OpenRouter](https://openrouter.ai) to connect to cloud models (Gemini, Claude, DeepSeek, Llama...) with automatic grouping of free/paid models, pricing estimation, and proxy header forwarding.
 - **Extensible Task Scheduler (Cron)** — schedule server-side tasks (such as daily web search digests, log rotations, or backups) to run in the background, even when the browser is closed.
 - **LM Studio extended API** — load/unload models with custom context length straight from the Settings drawer.

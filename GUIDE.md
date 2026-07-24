@@ -655,7 +655,8 @@ Lembre que cada modelo tem context window próprio (4k, 8k, 32k, 128k...). Acima
 
 ### Botões
 
-- **📎**: abre upload de arquivos pro contexto
+- **📎**: abre menu com opções de anexar arquivos, imagens e biblioteca de prompts
+- **🤖 Agente**: ativa/desativa o Modo Agente de Workspace. Quando ativo, o modelo pode usar ferramentas locais (`fs_list`, `fs_read`, `fs_search`) para inspecionar o código do projeto autônomamente
 - **Parar**: aparece durante streaming. Aborta a geração
 - **Enviar**: submete
 
@@ -667,9 +668,20 @@ Digite `/` no início da mensagem (ou após `\n`) → dropdown abre com:
 
 Setas ↑↓ navegam, Enter ou Tab seleciona, Esc fecha.
 
-### Paste de imagem (futuro)
+### Suporte Multimodal (Imagens & VLM)
 
-Não implementado ainda. Modelos VLM suportam imagens via API, mas a UI ainda não.
+O aplicativo suporta modelos multimodais de visão (como Gemma 4, LLaVA, Qwen-VL, Pixtral):
+- **Upload via Botão**: Clique no ícone de imagem para selecionar um arquivo PNG, JPG, GIF ou WebP (máx. 10 MB).
+- **Drag-and-Drop**: Arraste e solte uma imagem diretamente sobre a área de mensagens do chat. Um overlay semitransparente destacará a área de soltura.
+- **Indicador Visual**: O botão de upload exibirá um alerta em amarelo quando o modelo ativo não for identificado como VLM.
+- **Preview**: Um preview com botão de remoção (`×`) é exibido acima da caixa de texto antes do envio.
+
+### Bloco de Raciocínio (Reasoning & Thinking Models)
+
+Para modelos com capacidade de raciocínio (Gemma 4, DeepSeek R1, Qwen 3, Phi-4):
+- O pensamento do modelo é exibido em tempo real dentro de um bloco expansível `<details>`.
+- O cabeçalho mostra métricas atualizadas em tempo real: `💭 Pensando... (~X tok)` durante a geração e `💭 Raciocínio (~X tok · clique pra expandir)` após a conclusão.
+- O raciocínio não é salvo no histórico da conversa para economizar tokens em mensagens subsequentes.
 
 ---
 

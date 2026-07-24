@@ -552,7 +552,9 @@ function buildReasoningBlock(reasoning, streaming) {
   wrap.className = "msg-reasoning" + (streaming ? " streaming" : "");
   if (streaming) wrap.open = true; // open while streaming, user can collapse after
   const sum = document.createElement("summary");
-  sum.textContent = streaming ? "💭 Pensando..." : "💭 Raciocínio (clique pra expandir)";
+  const tok = estimateTokens(reasoning);
+  const tokStr = tok > 0 ? ` (~${tok} tok)` : "";
+  sum.textContent = streaming ? `💭 Pensando...${tokStr}` : `💭 Raciocínio${tokStr} (clique pra expandir)`;
   wrap.appendChild(sum);
   const pre = document.createElement("pre");
   pre.className = "msg-reasoning-text";
@@ -571,6 +573,11 @@ export function appendStreamingDelta(body, fullContent, fullReasoning = "") {
       // Insert at top
       body.insertBefore(reasoningWrap, body.firstChild);
     } else {
+      const sum = reasoningWrap.querySelector("summary");
+      if (sum) {
+        const tok = estimateTokens(fullReasoning);
+        sum.textContent = `💭 Pensando... (~${tok} tok)`;
+      }
       const pre = reasoningWrap.querySelector(".msg-reasoning-text");
       const textNode = pre?.firstChild;
       if (textNode && textNode.nodeType === Node.TEXT_NODE) {

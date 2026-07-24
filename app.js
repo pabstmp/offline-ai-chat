@@ -29,7 +29,8 @@ import { forkMessagesAt, createFork } from "./modules/ui/chat-helpers.js";
 import { getAlternativeProfiles, replaceMessageContent } from "./modules/ui/chat-helpers.js";
 import {
   initComposer, clearComposer, focusComposer, setBusy as setComposerBusy,
-  setComposerValue, setHistoryTokens, getPendingImage, clearPendingImage, insertPromptText
+  setComposerValue, setHistoryTokens, getPendingImage, clearPendingImage, insertPromptText,
+  isAgentModeActive
 } from "./modules/ui/composer.js";
 import { buildImageMessageContent } from "./modules/ui/composer-helpers.js";
 import { initSidebar, refreshSidebar, setActiveConversation, toggleSidebar, closeSidebar } from "./modules/ui/sidebar.js";
@@ -713,13 +714,18 @@ async function submitMessage(rawText) {
   // replace last user with potentially-injected version
   messages.push({ role: "user", content: userContent });
 
-  const profileTools = getOpenAIToolDefinitions(store.get("tools") || [], profile.tools || []);
+  let activeToolIds = profile.tools || [];
+  if (isAgentModeActive()) {
+    activeToolIds = [...new Set([...activeToolIds, "builtin-fs_list", "builtin-fs_read", "builtin-fs_search"])];
+  }
+  const activeTools = getOpenAIToolDefinitions(store.get("tools") || [], activeToolIds);
+
   const payload = {
     messages,
     model,
     stream: useStreaming,
     ...sampling,
-    ...(profileTools ? { tools: profileTools } : {})
+    ...(activeTools ? { tools: activeTools } : {})
   };
   if (store.get("advanced.debugMode")) {
     console.group("offline-ai request");

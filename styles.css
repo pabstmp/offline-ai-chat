@@ -2368,6 +2368,33 @@ body::after {
   color: var(--warn, #e6a23c);
 }
 
+.agent-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  height: 28px;
+  padding: 0 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--line);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+
+.agent-mode-chip:hover {
+  background: var(--bg-2);
+  color: var(--fg-1);
+}
+
+.agent-mode-chip.active {
+  background: var(--accent-soft, rgba(37, 99, 235, 0.15));
+  color: var(--accent, #2563eb);
+  border-color: var(--accent, #2563eb);
+  font-weight: 600;
+}
+
 /* =========================================================================
    RAG Indexing Indicator (R6)
    ========================================================================= */

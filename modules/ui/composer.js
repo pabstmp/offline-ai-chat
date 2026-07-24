@@ -70,9 +70,46 @@ export function initComposer(opts) {
   });
 
   initAttachmentActions();
+  addAgentModeButton();
 
   // Image drag-drop on composer area
   initComposerDropZone();
+}
+
+/* ---------- Agent Mode ---------- */
+let agentModeActive = false;
+
+export function isAgentModeActive() {
+  return agentModeActive;
+}
+
+export function setAgentMode(active) {
+  agentModeActive = !!active;
+  const btn = document.getElementById("agentModeButton");
+  if (btn) {
+    btn.classList.toggle("active", agentModeActive);
+    btn.title = agentModeActive
+      ? "Modo Agente Ativo: O modelo pode usar ferramentas de arquivos do workspace"
+      : "Modo Agente Desligado: Clique para permitir que o modelo acesse ferramentas de arquivos do workspace";
+  }
+}
+
+function addAgentModeButton() {
+  if (!elements.attachButton) return;
+  if (document.getElementById("agentModeButton")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "agentModeButton";
+  btn.type = "button";
+  btn.className = "agent-mode-chip";
+  btn.title = "Modo Agente Desligado: Clique para permitir que o modelo acesse ferramentas de arquivos do workspace";
+  btn.innerHTML = `<span class="agent-mode-icon">🤖</span><span>Agente</span>`;
+
+  btn.addEventListener("click", () => {
+    setAgentMode(!agentModeActive);
+  });
+
+  elements.attachButton.insertAdjacentElement("afterend", btn);
 }
 
 /* ---------- composer image drop zone ---------- */
