@@ -567,7 +567,13 @@ function resolveSafePath(sourceRoot, relPath) {
     );
   }
 
-  const normalizedRel = path.normalize(relPath).replace(/^([\\/])+/, "");
+  let cleanRel = String(relPath || "");
+  try { cleanRel = decodeURIComponent(cleanRel); } catch {}
+  if (cleanRel.includes("\0")) {
+    throw new Error("relPath contém caracteres nulos inválidos.");
+  }
+
+  const normalizedRel = path.normalize(cleanRel).replace(/^([\\/])+/, "");
   if (normalizedRel.startsWith("..") || path.isAbsolute(normalizedRel)) {
     throw new Error("relPath inválido.");
   }
